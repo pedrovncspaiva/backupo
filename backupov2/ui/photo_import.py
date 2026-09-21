@@ -30,6 +30,7 @@ from ..vision import (
     save_api_key,
     to_drafts,
 )
+from . import theme
 from .widgets import CellEditor
 
 
@@ -61,6 +62,8 @@ class PhotoImportDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("Importar nomes de fotos")
         self.transient(parent)
+        self.configure(background=theme.CANVAS)
+        theme.apply_window_icon(self)
         self.result = None
         self.local_root = local_root
         self.ask_parent = ask_parent
@@ -107,7 +110,7 @@ class PhotoImportDialog(tk.Toplevel):
         )
         self.group_check.pack(side="right")
 
-        ttk.Label(outer, textvariable=self.status_var, foreground="#4b5563").grid(
+        ttk.Label(outer, textvariable=self.status_var, foreground=theme.INK_SOFT).grid(
             row=1, column=0, sticky="w", pady=(8, 0)
         )
 
@@ -122,7 +125,7 @@ class PhotoImportDialog(tk.Toplevel):
         ttk.Label(
             self.parent_row,
             text="lida da folha - edite se quiser",
-            foreground="#4b5563",
+            foreground=theme.INK_SOFT,
         ).grid(row=1, column=1, sticky="w", pady=(2, 0))
         if not self.ask_parent:
             self.parent_row.grid_remove()
@@ -161,22 +164,23 @@ class PhotoImportDialog(tk.Toplevel):
             yscrollcommand=vertical.set, xscrollcommand=horizontal.set
         )
 
-        self.tree.tag_configure("review", background="#fff7e6")
-        self.tree.tag_configure("uncertain", foreground="#a4161a")
+        self.tree.tag_configure("review", background=theme.WARNING_TINT)
+        self.tree.tag_configure("uncertain", foreground=theme.DANGER)
         self.tree.bind("<Double-1>", self._begin_edit)
 
         ttk.Label(
             outer,
             text="Clique duas vezes em um nome para corrigi-lo. "
                  "As linhas destacadas foram alteradas ou estao repetidas.",
-            foreground="#4b5563",
+            foreground=theme.INK_SOFT,
         ).grid(row=3, column=0, sticky="w", pady=(8, 0))
 
         buttons = ttk.Frame(outer)
         buttons.grid(row=4, column=0, sticky="e", pady=(12, 0))
         ttk.Button(buttons, text="Cancelar", command=self._cancel).pack(side="right")
         self.add_button = ttk.Button(
-            buttons, text="Adicionar ao trabalho", command=self._accept, state="disabled"
+            buttons, text="Adicionar ao trabalho", command=self._accept, state="disabled",
+            style="Accent.TButton",
         )
         self.add_button.pack(side="right", padx=(0, 8))
 

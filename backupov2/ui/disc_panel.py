@@ -58,10 +58,37 @@ class DiscPanel(ttk.Frame):
         self.progress_var = tk.StringVar(value="")
         self.file_var = tk.StringVar(value="")
 
-        body = tk.Frame(self, background=theme.SURFACE, padx=12, pady=10)
-        body.grid(row=0, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=1)
+        # This column's content is the most variable-height thing in the
+        # window: the destination box and the trouble warning each come and
+        # go, and together with a long file name or error message they can
+        # ask for more room than a short window has to give. A plain Frame
+        # would silently clip its own buttons off the bottom in exactly the
+        # moment - a disc going wrong - where reaching them matters most. A
+        # Canvas scrolls instead, and the scrollbar only appears when it is
+        # actually needed.
+        canvas = tk.Canvas(self, background=theme.SURFACE, highlightthickness=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
         self.rowconfigure(0, weight=1)
+        scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scroll.set)
+        self._scrollbar = scroll
+        self._canvas = canvas
+
+        body = tk.Frame(canvas, background=theme.SURFACE, padx=12, pady=10)
+        body.columnconfigure(0, weight=1)
+        window = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def sync_scrollregion(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            self._update_scrollbar()
+
+        def sync_body_width(event) -> None:
+            canvas.itemconfigure(window, width=event.width)
+            self._update_scrollbar()
+
+        body.bind("<Configure>", sync_scrollregion)
+        canvas.bind("<Configure>", sync_body_width)
+        canvas.bind("<MouseWheel>", self._on_mousewheel)
 
         tk.Label(body, text="DISCO ATUAL", font=theme.FONT_SMALL_BOLD,
                  background=theme.SURFACE, foreground=theme.INK_MUTED,
@@ -130,7 +157,7 @@ class DiscPanel(ttk.Frame):
             justify="left",
             anchor="w",
             padx=10,
-            pady=8,
+            pady=6,
         )
         self._trouble_shown = False
 
@@ -172,16 +199,42 @@ class DiscPanel(ttk.Frame):
         self.eject_button.pack(side="left", padx=(6, 0))
         tip(self.eject_button, "Abrir a bandeja agora  (Ctrl+J)")
 
+        # Its own row, not a fourth button squeezed onto the end of
+        # ``secondary``: at this pane's usual width four buttons in one row
+        # don't fit and the last one clips off the edge - and this is the one
+        # that matters most in that exact moment, not the one to lose.
+        self.danger_row = tk.Frame(self.buttons, background=theme.SURFACE)
         self.corrupt_button = ttk.Button(
-            secondary,
+            self.danger_row,
             text=f"{theme.GLYPH['warning']}  Disco defeituoso",
             style="Danger.TButton",
             command=lambda: self.on_command("mark_corrupted"),
         )
+        self.corrupt_button.pack(side="left")
         tip(self.corrupt_button,
             "Parar, marcar a pasta como falha e gravar um relatorio dentro dela")
 
         self._body = body
+        self._update_scrollbar()
+
+    # -- scrolling ----------------------------------------------------------
+
+    def _update_scrollbar(self) -> None:
+        """Show the scrollbar only once the content is actually taller than
+        the pane - most of the time this panel fits and should look like it
+        never scrolls at all."""
+        self._canvas.update_idletasks()
+        content_height = self._body.winfo_reqheight()
+        visible_height = self._canvas.winfo_height()
+        if content_height > visible_height > 1:
+            self._scrollbar.grid(row=0, column=1, sticky="ns")
+        else:
+            self._scrollbar.grid_remove()
+            self._canvas.yview_moveto(0)
+
+    def _on_mousewheel(self, event) -> None:
+        if self._scrollbar.winfo_manager():
+            self._canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
 
     # -- updates ----------------------------------------------------------
 
@@ -292,14 +345,18 @@ class DiscPanel(ttk.Frame):
         self.file_var.set(message)
 
     def show_trouble(self, message: str) -> None:
-        """Surface the way out of a disc that is not going to finish."""
-        self.trouble_var.set(
-            f"{theme.GLYPH['warning']}  {message}\n\nVoce pode marcar este disco como "
-            "defeituoso e seguir para o proximo."
-        )
+        """Surface the way out of a disc that is not going to finish.
+
+        Just the problem, not also what to do about it: the "Disco
+        defeituoso" button appears in the same breath and says that itself.
+        Spelling it out again in the message was the difference between
+        fitting this panel on a 900px-tall window and clipping its own
+        buttons off the bottom - exactly the moment this box exists for.
+        """
+        self.trouble_var.set(f"{theme.GLYPH['warning']}  {message}")
         if not self._trouble_shown:
-            self.trouble_label.grid(row=8, column=0, sticky="ew", pady=(12, 0))
-            self.corrupt_button.pack(side="left", padx=(6, 0))
+            self.trouble_label.grid(row=8, column=0, sticky="ew", pady=(8, 0))
+            self.danger_row.pack(fill="x", pady=(6, 0))
             self._trouble_shown = True
 
     def clear_trouble(self) -> None:
@@ -307,7 +364,7 @@ class DiscPanel(ttk.Frame):
             return
         self.trouble_var.set("")
         self.trouble_label.grid_remove()
-        self.corrupt_button.pack_forget()
+        self.danger_row.pack_forget()
         self._trouble_shown = False
 
     @staticmethod

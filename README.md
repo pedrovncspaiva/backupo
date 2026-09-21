@@ -13,12 +13,9 @@ claro para cada caso, sem perder nada do que já foi copiado.
 executável para Windows que não precisa de nada instalado — veja
 [Gerando o executável](#gerando-o-executável).
 
-> **[IMAGEM — `docs/img/janela-principal.png`]**
-> A janela principal com um trabalho em andamento. Mostrar: a faixa azul do
-> cabeçalho com o nome do lote e a barra de progresso, a lista de pastas à
-> esquerda (com uma linha concluída em verde, a próxima destacada em azul e
-> uma pendente), o painel "Disco atual" à direita durante a contagem
-> regressiva, e a aba Registro embaixo com algumas linhas.
+![Janela principal com um trabalho em andamento](docs/img/janela-principal.png)
+
+*A janela principal com um trabalho em andamento: o cartão do lote, a fila de pastas e o painel do disco atual.*
 
 ---
 
@@ -81,11 +78,9 @@ O caminho mais curto, do zero até o primeiro disco copiado.
 7. **Ao terminar o lote**, clique em **Fechar trabalho** para liberar a tela
    para o próximo.
 
-> **[GIF — `docs/img/ciclo-completo.gif`]**
-> O ciclo inteiro de um disco, acelerado: o disco sendo detectado no painel
-> da direita, a contagem regressiva correndo de 10 a 0, a barra de progresso
-> avançando durante a cópia, a linha da lista virando "concluida" em verde, e
-> a mensagem "Remova o disco" ao final. Uns 15 a 20 segundos de GIF.
+![O ciclo de um disco, do início ao fim](docs/img/ciclo-completo.gif)
+
+*O ciclo de um disco: detecção, contagem regressiva, cópia até 100% e o aviso para remover o disco.*
 
 Se você tem a folha do protocolo de entrega em mãos, pule os passos 2 e 3 e
 use a importação por foto — a seção seguinte explica.
@@ -125,11 +120,9 @@ principal: a linha da caixa vira a sugestão, e você só edita se quiser. Por
 isso o botão funciona **sem nenhum trabalho aberto** — não é preciso digitar
 nada antes.
 
-> **[IMAGEM — `docs/img/importar-fotos-revisao.png`]**
-> A janela de importação depois de ler as fotos. O importante é a tabela de
-> revisão: a coluna com o nome proposto ao lado da coluna "como está no
-> papel", e pelo menos uma linha sinalizada na coluna de situação (por
-> exemplo `caractere invalido no Windows: /` ou `leitura incerta`).
+![Revisão dos nomes lidos por foto](docs/img/importar-fotos-revisao.png)
+
+*A revisão depois da leitura por foto: nomes propostos, o que estava escrito no papel, e o que merece conferência.*
 
 **Nada entra no trabalho sem você ver antes.** A tabela mostra, lado a lado,
 o nome proposto e como está escrito no papel, sinalizando o que merece
@@ -170,11 +163,9 @@ defina a variável de ambiente `GEMINI_API_KEY` antes de abrir o programa.
 
 ## Conhecendo a tela
 
-> **[IMAGEM — `docs/img/tela-anotada.png`]**
-> A janela principal com números apontando as sete regiões: (1) o menu,
-> (2) a faixa da identidade, (3) o cartão do lote, (4) a barra de
-> ferramentas, (5) a lista de pastas, (6) o painel do disco atual, (7) as
-> abas Registro e Problemas e a barra de status.
+![As sete regiões da janela principal](docs/img/tela-anotada.png)
+
+*As sete regiões da janela: menu, identidade, cartão do lote, barra de ferramentas, lista de pastas, disco atual e status.*
 
 **1. O menu** reúne tudo o que o programa faz, inclusive o que também tem
 botão. É por onde se descobre o programa sem precisar adivinhar onde clicar:
@@ -281,11 +272,9 @@ Clique em **Enviar para...** durante a contagem. Abre um seletor com duas
 partes: **Usadas recentemente** (as últimas pastas concluídas, em destaque
 no topo) e **Todas as pastas**, na ordem do trabalho.
 
-> **[IMAGEM — `docs/img/enviar-para.png`]**
-> O seletor "Enviar disco para..." aberto, mostrando a seção "Usadas
-> recentemente" em negrito com fundo claro no topo, a linha separadora
-> "Todas as pastas" e a lista completa abaixo. Se possível, com uma pasta
-> concluída selecionada para aparecer o aviso em âmbar no rodapé.
+![Diálogo Enviar disco para...](docs/img/enviar-para.png)
+
+*Escolhendo para qual pasta o disco carregado vai — as usadas recentemente aparecem destacadas no topo.*
 
 A contagem **pausa** assim que o seletor abre — não há risco de a cópia
 começar sozinha enquanto você procura. Ao confirmar, a cópia começa na hora,
@@ -307,11 +296,9 @@ Ligue por um dos dois caminhos:
 - no seletor **Enviar para...**, marque *Continuar enviando os próximos
   discos para esta pasta* antes de confirmar.
 
-> **[IMAGEM — `docs/img/modo-acumular.png`]**
-> A janela com o modo acumular ligado: a faixa âmbar logo abaixo da barra de
-> progresso do cabeçalho, dizendo em qual pasta está acumulando e quantos
-> discos já entraram, com o botão "Parar de acumular" à direita; e, na
-> lista, a linha correspondente em âmbar com a situação `acumulando (3)`.
+![Modo acumular ligado numa pasta](docs/img/modo-acumular.png)
+
+*Acumulando discos: a faixa âmbar avisa que todo disco vai para a mesma pasta até ser desligada.*
 
 Enquanto está ligado, uma faixa âmbar no topo diz em qual pasta está
 acumulando e quantos discos já entraram, com o botão **Parar de acumular** à
@@ -345,11 +332,9 @@ Três botões, e a diferença entre eles é só o que acontece com o disco:
 | **Pular disco** | para a transferência e ejeta | volta para a sua mão |
 | **Cancelar** | para a transferência | fica na bandeja, para tentar de novo |
 
-> **[GIF — `docs/img/pausar-retomar.gif`]**
-> Uma cópia em andamento, o clique em "Pausar", a barra de progresso
-> visivelmente parada e o texto grande mudando para "Copia pausada" enquanto
-> o botão vira "Retomar", e então o clique em "Retomar" com a barra voltando
-> a andar. Uns 10 segundos.
+![Pausando e retomando uma cópia](docs/img/pausar-retomar.gif)
+
+*Pausar segura a cópia sem perder o progresso; o botão vira Retomar até você continuar.*
 
 **Nada do que já foi gravado se perde em nenhum dos três casos.** A pasta
 volta para *pendente*, os arquivos copiados continuam lá, e reinserir o
@@ -379,11 +364,9 @@ situações:
 - a unidade **parou de responder** por 45 segundos — sem erro, sem
   progresso, sem nada.
 
-> **[IMAGEM — `docs/img/disco-defeituoso.png`]**
-> O painel do disco durante uma cópia problemática: a tarja vermelha com a
-> mensagem "3 arquivo(s) nao puderam ser lidos ate agora. Voce pode marcar
-> este disco como defeituoso e seguir para o proximo." e, na fileira de
-> botões logo abaixo, o botão "Disco defeituoso" que só existe nesse momento.
+![Aviso de disco com problema, com o botão Disco defeituoso](docs/img/disco-defeituoso.png)
+
+*Um disco começando a falhar: o aviso e o botão Disco defeituoso aparecem só quando fazem sentido.*
 
 Nada acontece sozinho: um disco lento que ainda vai terminar é melhor do que
 um disco abandonado por palpite. A decisão é sua.
@@ -437,10 +420,9 @@ Abre uma janela para confirmar e, se quiser, escrever uma **observação**
 um protocolo de entrega precisa ser respondido dizendo qual disco não pôde
 ser lido e por quê, e ninguém lembra do detalhe duas semanas depois.
 
-> **[IMAGEM — `docs/img/marcar-defeituoso.png`]**
-> A janela "Disco defeituoso" aberta, com o nome da pasta na pergunta do
-> topo, o texto explicando que um arquivo de aviso será criado, e o campo de
-> observação com um exemplo preenchido.
+![Diálogo Disco defeituoso](docs/img/marcar-defeituoso.png)
+
+*Marcando uma pasta como pulada por disco defeituoso, com uma observação para o relatório.*
 
 A pasta fica **pulada (defeito)** na lista — não *falhou*, porque ela não
 foi tentada e sim descartada de propósito — e recebe o mesmo
@@ -475,11 +457,9 @@ Nada se perde. Reabra o trabalho por **Abrir...** ou **Recentes** e o
 programa compara o que estava salvo com o que existe de fato no disco,
 mostrando uma janela de reconciliação quando algo precisa da sua decisão.
 
-> **[IMAGEM — `docs/img/retomar-trabalho.png`]**
-> A janela "Retomar trabalho" ao reabrir um lote interrompido, com o resumo
-> no topo ("N item(ns) precisam de uma decisao") e pelo menos um item com as
-> opções em botões de rádio, como "Retomar (manter o que ja existe)" e
-> "Sobrescrever".
+![Diálogo Retomar trabalho](docs/img/retomar-trabalho.png)
+
+*Reabrindo um trabalho: o que a reconciliação encontrou, e o que já foi ajustado sozinho.*
 
 | Situação | O que acontece |
 |---|---|
@@ -547,9 +527,9 @@ Botão direito em qualquer linha:
 - **Abrir no Explorer**
 - **Excluir pasta da lista**
 
-> **[IMAGEM — `docs/img/menu-contexto.png`]**
-> O menu de contexto aberto sobre uma linha da lista, mostrando todas as
-> opções de uma vez.
+![Menu de contexto da lista de pastas](docs/img/menu-contexto.png)
+
+*O menu de contexto da lista, com todas as ações disponíveis para a pasta selecionada.*
 
 ### Quando cada botão do painel fica ativo
 

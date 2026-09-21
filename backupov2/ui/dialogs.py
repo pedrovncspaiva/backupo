@@ -10,6 +10,7 @@ from ..core import DEFECT_REPORT_NAME, parse_subfolders
 from ..jobmodel import EntryDraft, Job
 from ..reconcile import Finding, ReconcileReport, Resolution
 from ..strings import status_label
+from . import theme
 
 RESOLUTION_LABELS = {
     Resolution.RESUME_INTO: "Retomar (manter o que ja existe)",
@@ -30,6 +31,8 @@ class _Dialog(tk.Toplevel):
         self.transient(parent)
         self.resizable(True, True)
         self.result = None
+        self.configure(background=theme.CANVAS)
+        theme.apply_window_icon(self)
 
         self.geometry(f"{width}x{height}")
         self.update_idletasks()
@@ -68,14 +71,14 @@ class AddEntriesDialog(_Dialog):
         self.text.focus_set()
 
         self.error_var = tk.StringVar()
-        ttk.Label(frame, textvariable=self.error_var, foreground="#a4161a", wraplength=470).grid(
+        ttk.Label(frame, textvariable=self.error_var, foreground=theme.DANGER, wraplength=470).grid(
             row=2, column=0, sticky="w", pady=(8, 0)
         )
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=3, column=0, sticky="e", pady=(12, 0))
         ttk.Button(buttons, text="Cancelar", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="Adicionar", command=self._accept).pack(
+        ttk.Button(buttons, text="Adicionar", command=self._accept, style="Accent.TButton").pack(
             side="right", padx=(0, 8)
         )
 
@@ -119,7 +122,7 @@ class MarkDefectiveDialog(_Dialog):
                 f"'{DEFECT_REPORT_NAME}' explicando que o conteudo nao pode "
                 "ser copiado. Nada que ja esteja na pasta e apagado."
             ),
-            foreground="#4b5563",
+            foreground=theme.INK_SOFT,
             wraplength=470,
             justify="left",
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
@@ -134,13 +137,13 @@ class MarkDefectiveDialog(_Dialog):
         ttk.Label(
             frame,
             text="Ex.: disco trincado; nao e reconhecido pelo leitor; superficie riscada.",
-            foreground="#6b7280",
+            foreground=theme.INK_MUTED,
         ).grid(row=4, column=0, sticky="w", pady=(4, 0))
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=5, column=0, sticky="e", pady=(12, 0))
         ttk.Button(buttons, text="Cancelar", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="Marcar como defeituoso", command=self._accept).pack(
+        ttk.Button(buttons, text="Marcar como defeituoso", command=self._accept, style="Accent.TButton").pack(
             side="right", padx=(0, 8)
         )
 
@@ -199,10 +202,10 @@ class SendToDialog(_Dialog):
         self.tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
 
         self.tree.tag_configure(
-            "heading", font=("Segoe UI", 9, "bold"), foreground="#4b5563"
+            "heading", font=theme.FONT_SMALL_BOLD, foreground=theme.INK_SOFT
         )
         self.tree.tag_configure(
-            "recent", font=("Segoe UI", 10, "bold"), background="#eef4ff"
+            "recent", font=theme.FONT_BODY_BOLD, background=theme.BRAND_TINT
         )
 
         self._populate()
@@ -220,14 +223,14 @@ class SendToDialog(_Dialog):
         ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         self.warn_var = tk.StringVar()
-        ttk.Label(frame, textvariable=self.warn_var, foreground="#8a5a00", wraplength=520).grid(
+        ttk.Label(frame, textvariable=self.warn_var, foreground=theme.WARNING, wraplength=520).grid(
             row=4, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(buttons, text="Cancelar", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="Enviar", command=self._accept).pack(
+        ttk.Button(buttons, text="Enviar", command=self._accept, style="Accent.TButton").pack(
             side="right", padx=(0, 8)
         )
 
@@ -369,7 +372,7 @@ class ReconcileDialog(_Dialog):
 
         buttons = ttk.Frame(outer)
         buttons.grid(row=2, column=0, sticky="e", pady=(12, 0))
-        ttk.Button(buttons, text="Aplicar", command=self._accept).pack(side="right")
+        ttk.Button(buttons, text="Aplicar", command=self._accept, style="Accent.TButton").pack(side="right")
 
     def _accept(self) -> None:
         decisions = []
