@@ -3,6 +3,11 @@
 One frame that swaps between four looks driven by runner state - no disc,
 countdown, working, waiting for removal - so the user always has exactly the
 controls that make sense right now.
+
+The controls are split into a primary row and a secondary row. Everything that
+*advances* the batch is on top, at full size; everything that interrupts it
+sits below, quieter. A row of six identical buttons made "Cancelar" exactly as
+prominent as "Iniciar agora", which is not the shape of the decision.
 """
 
 from __future__ import annotations
@@ -14,10 +19,8 @@ from typing import Callable
 from ..jobmodel import DiscKind
 from ..runner import RunnerState
 from ..strings import kind_label, state_label
-from .widgets import format_bytes, format_duration, format_speed
-
-TROUBLE_BG = "#fee2e2"
-TROUBLE_FG = "#991b1b"
+from . import theme
+from .widgets import format_bytes, format_duration, format_speed, tip
 
 IDLE_STATES = {
     RunnerState.IDLE,
@@ -27,10 +30,24 @@ IDLE_STATES = {
     RunnerState.JOB_COMPLETE,
 }
 
+# The state title's colour, so the panel reads before it is read.
+STATE_COLOURS = {
+    RunnerState.WORKING: theme.BRAND_DEEP,
+    RunnerState.GRACE_COUNTDOWN: theme.BRAND,
+    RunnerState.PAUSED: theme.WARNING,
+    RunnerState.DUPLICATE_WARNING: theme.WARNING,
+    RunnerState.NO_TARGET: theme.WARNING,
+    RunnerState.ERROR_HOLD: theme.DANGER,
+    RunnerState.JOB_COMPLETE: theme.SUCCESS,
+    RunnerState.WAIT_DISC_REMOVED: theme.BRAND,
+    RunnerState.EJECTING: theme.BRAND,
+}
 
-class DiscPanel(ttk.LabelFrame):
+
+class DiscPanel(ttk.Frame):
     def __init__(self, master, on_command: Callable[[str], None], **kwargs) -> None:
-        super().__init__(master, text="Disco atual", padding=12, **kwargs)
+        kwargs.setdefault("style", "Card.TFrame")
+        super().__init__(master, **kwargs)
         self.on_command = on_command
         self.columnconfigure(0, weight=1)
 
@@ -41,86 +58,130 @@ class DiscPanel(ttk.LabelFrame):
         self.progress_var = tk.StringVar(value="")
         self.file_var = tk.StringVar(value="")
 
-        ttk.Label(
-            self, textvariable=self.state_var, font=("Segoe UI", 12, "bold")
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Label(self, textvariable=self.disc_var, font=("Segoe UI", 10)).grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
-        )
-        ttk.Label(self, textvariable=self.detail_var, foreground="#4b5563").grid(
-            row=2, column=0, sticky="w"
-        )
+        body = tk.Frame(self, background=theme.SURFACE, padx=12, pady=10)
+        body.grid(row=0, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
 
-        target_row = ttk.Frame(self)
-        target_row.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        target_row.columnconfigure(0, weight=1)
-        ttk.Label(
-            target_row, textvariable=self.target_var, font=("Segoe UI", 10, "bold")
-        ).grid(row=0, column=0, sticky="w")
+        tk.Label(body, text="DISCO ATUAL", font=theme.FONT_SMALL_BOLD,
+                 background=theme.SURFACE, foreground=theme.INK_MUTED,
+                 anchor="w").grid(row=0, column=0, sticky="w")
+
+        self.state_label = tk.Label(
+            body, textvariable=self.state_var, font=(theme.UI_FAMILY, 13, "bold"),
+            background=theme.SURFACE, foreground=theme.INK, anchor="w",
+            wraplength=320, justify="left",
+        )
+        self.state_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        tk.Label(body, textvariable=self.disc_var, font=theme.FONT_BODY_BOLD,
+                 background=theme.SURFACE, foreground=theme.INK, anchor="w",
+                 wraplength=320, justify="left").grid(row=2, column=0, sticky="w",
+                                                      pady=(4, 0))
+        tk.Label(body, textvariable=self.detail_var, font=theme.FONT_SMALL,
+                 background=theme.SURFACE, foreground=theme.INK_SOFT, anchor="w",
+                 wraplength=320, justify="left").grid(row=3, column=0, sticky="w")
+
+        # -- where this disc is going -------------------------------------
+        # Stacked rather than side by side: this pane is the narrow one, and a
+        # folder name plus a button on one line is what clips first.
+        target_card = tk.Frame(body, background=theme.BRAND_TINT, padx=10, pady=7)
+        target_card.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        target_card.columnconfigure(0, weight=1)
+        tk.Label(target_card, text="DESTINO DESTE DISCO", font=theme.FONT_SMALL_BOLD,
+                 background=theme.BRAND_TINT, foreground=theme.BRAND).grid(
+            row=0, column=0, sticky="w")
         self.send_button = ttk.Button(
-            target_row, text="Enviar para...", command=lambda: self.on_command("send_to")
+            target_card, text="Trocar...", style="Quiet.TButton",
+            command=lambda: self.on_command("send_to")
         )
-        self.send_button.grid(row=0, column=1, sticky="e")
+        self.send_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self._target_card = target_card
+        tk.Label(target_card, textvariable=self.target_var, font=theme.FONT_BODY_BOLD,
+                 background=theme.BRAND_TINT, foreground=theme.BRAND_DEEP, anchor="w",
+                 wraplength=290, justify="left").grid(row=1, column=0, columnspan=2,
+                                                      sticky="ew", pady=(2, 0))
+        tip(self.send_button, "Mandar este disco para outra pasta da lista  (Ctrl+D)")
 
-        self.bar = ttk.Progressbar(self, mode="determinate", maximum=100)
-        self.bar.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        # -- progress -----------------------------------------------------
+        self.bar = ttk.Progressbar(body, mode="determinate", maximum=100,
+                                   style="Disc.Horizontal.TProgressbar")
+        self.bar.grid(row=5, column=0, sticky="ew", pady=(8, 0))
 
-        ttk.Label(self, textvariable=self.file_var, foreground="#4b5563").grid(
-            row=5, column=0, sticky="w", pady=(6, 0)
-        )
-        ttk.Label(self, textvariable=self.progress_var, foreground="#4b5563").grid(
-            row=6, column=0, sticky="w"
-        )
+        tk.Label(body, textvariable=self.file_var, font=theme.FONT_SMALL,
+                 background=theme.SURFACE, foreground=theme.INK_SOFT, anchor="w",
+                 wraplength=320, justify="left").grid(row=6, column=0, sticky="w",
+                                                      pady=(6, 0))
+        tk.Label(body, textvariable=self.progress_var, font=theme.FONT_SMALL,
+                 background=theme.SURFACE, foreground=theme.INK_SOFT,
+                 anchor="w").grid(row=7, column=0, sticky="w", pady=(2, 0))
 
         # Only shown once a disc is actually going badly. A permanent "this
         # disc is broken" button would invite writing off discs that were
         # merely slow.
         self.trouble_var = tk.StringVar(value="")
         self.trouble_label = tk.Label(
-            self,
+            body,
             textvariable=self.trouble_var,
-            background=TROUBLE_BG,
-            foreground=TROUBLE_FG,
-            wraplength=360,
+            background=theme.DANGER_TINT,
+            foreground=theme.DANGER,
+            font=theme.FONT_SMALL,
+            wraplength=300,
             justify="left",
             anchor="w",
-            padx=8,
-            pady=6,
+            padx=10,
+            pady=8,
         )
         self._trouble_shown = False
 
-        self.buttons = ttk.Frame(self)
-        self.buttons.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+        # -- controls -----------------------------------------------------
+        self.buttons = tk.Frame(body, background=theme.SURFACE)
+        self.buttons.grid(row=9, column=0, sticky="ew", pady=(10, 0))
 
+        primary = tk.Frame(self.buttons, background=theme.SURFACE)
+        primary.pack(fill="x")
         self.start_button = ttk.Button(
-            self.buttons, text="Iniciar agora", command=lambda: self.on_command("start_now")
-        )
-        self.skip_button = ttk.Button(
-            self.buttons, text="Pular disco", command=lambda: self.on_command("skip_disc")
-        )
+            primary, text=f"{theme.GLYPH['play']}  Iniciar agora", style="Accent.TButton",
+            command=lambda: self.on_command("start_now"))
+        self.start_button.pack(side="left")
+        tip(self.start_button, "Nao esperar a contagem regressiva  (Espaco)")
+
         self.pause_button = ttk.Button(
-            self.buttons, text="Pausar", command=lambda: self.on_command("pause")
-        )
+            primary, text=f"{theme.GLYPH['pause']}  Pausar",
+            command=lambda: self.on_command("pause"))
+        self.pause_button.pack(side="left", padx=(8, 0))
+        tip(self.pause_button, "Segurar tudo sem perder o progresso  (Ctrl+P)")
+
+        secondary = tk.Frame(self.buttons, background=theme.SURFACE)
+        secondary.pack(fill="x", pady=(6, 0))
+        self.skip_button = ttk.Button(
+            secondary, text=f"{theme.GLYPH['skip']}  Pular disco", style="Quiet.TButton",
+            command=lambda: self.on_command("skip_disc"))
+        self.skip_button.pack(side="left")
+        tip(self.skip_button, "Deixar a pasta pendente e ejetar este disco")
+
         self.cancel_button = ttk.Button(
-            self.buttons, text="Cancelar", command=lambda: self.on_command("cancel")
-        )
+            secondary, text=f"{theme.GLYPH['stop']}  Cancelar", style="Quiet.TButton",
+            command=lambda: self.on_command("cancel"))
+        self.cancel_button.pack(side="left", padx=(6, 0))
+        tip(self.cancel_button, "Parar a copia e manter o disco na bandeja  (Esc)")
+
         self.eject_button = ttk.Button(
-            self.buttons, text="Ejetar", command=lambda: self.on_command("eject")
-        )
-        for button in (
-            self.start_button,
-            self.skip_button,
-            self.pause_button,
-            self.cancel_button,
-            self.eject_button,
-        ):
-            button.pack(side="left", padx=(0, 8))
+            secondary, text=f"{theme.GLYPH['eject']}  Ejetar", style="Quiet.TButton",
+            command=lambda: self.on_command("eject"))
+        self.eject_button.pack(side="left", padx=(6, 0))
+        tip(self.eject_button, "Abrir a bandeja agora  (Ctrl+J)")
 
         self.corrupt_button = ttk.Button(
-            self.buttons,
-            text="Disco defeituoso",
+            secondary,
+            text=f"{theme.GLYPH['warning']}  Disco defeituoso",
+            style="Danger.TButton",
             command=lambda: self.on_command("mark_corrupted"),
         )
+        tip(self.corrupt_button,
+            "Parar, marcar a pasta como falha e gravar um relatorio dentro dela")
+
+        self._body = body
 
     # -- updates ----------------------------------------------------------
 
@@ -135,6 +196,8 @@ class DiscPanel(ttk.LabelFrame):
         Retomar.
         """
         self.state_var.set(detail or state_label(state))
+        self.state_label.configure(
+            foreground=STATE_COLOURS.get(state, theme.INK))
         working = state is RunnerState.WORKING
         countdown = state is RunnerState.GRACE_COUNTDOWN
         choosing = state in (RunnerState.DUPLICATE_WARNING, RunnerState.NO_TARGET)
@@ -147,24 +210,33 @@ class DiscPanel(ttk.LabelFrame):
         self._enable(self.send_button, countdown or choosing or idle_paused)
         self._enable(self.cancel_button, working)
         # Not while copying - the drive is in use, and skip is the way out
-        # that opens the tray safely.
-        self._enable(self.eject_button, not working)
-        self.pause_button.configure(text="Retomar" if paused else "Pausar")
-        self._enable(self.pause_button, True)
+        # that opens the tray safely. Not in IDLE either: that state only
+        # happens with no job open, and there is no runner to ask.
+        self._enable(self.eject_button, not working and state is not RunnerState.IDLE)
+        self.pause_button.configure(
+            text=f"{theme.GLYPH['play']}  Retomar" if paused
+            else f"{theme.GLYPH['pause']}  Pausar")
+        self._enable(self.pause_button, state is not RunnerState.IDLE)
 
         # The offer belongs to the disc being copied, so it goes away with it.
         if not working:
             self.clear_trouble()
 
         if state in IDLE_STATES:
-            self.bar.configure(mode="determinate", maximum=100)
-            self.bar["value"] = 0
+            self.bar.configure(mode="determinate", maximum=100,
+                               style="Disc.Horizontal.TProgressbar")
+            self.bar["value"] = 100 if state is RunnerState.JOB_COMPLETE else 0
+            if state is RunnerState.JOB_COMPLETE:
+                self.bar.configure(style="Success.Horizontal.TProgressbar")
             self.target_var.set("")
+            self._show_target_card(False)
             self.file_var.set("")
             self.progress_var.set("")
             if state is not RunnerState.IDENTIFYING:
                 self.disc_var.set("Nenhum disco carregado")
-                self.detail_var.set("")
+                self.detail_var.set(
+                    "Insira o proximo disco - ele e reconhecido sozinho."
+                    if state is RunnerState.READY_NO_DISC else "")
 
     def show_disc(self, media, kind: DiscKind, reason: str = "") -> None:
         self.disc_var.set(f"{media.display_name}   [{kind_label(kind).upper()}]")
@@ -179,7 +251,8 @@ class DiscPanel(ttk.LabelFrame):
         )
 
     def show_countdown(self, remaining: float, total: float, target_name: str) -> None:
-        self.target_var.set(f"-> {target_name}")
+        self.target_var.set(target_name)
+        self._show_target_card(bool(target_name))
         if total <= 0:
             self.state_var.set("Pronto - aguardando confirmacao")
             self.bar.configure(maximum=100)
@@ -190,13 +263,26 @@ class DiscPanel(ttk.LabelFrame):
         self.bar["value"] = remaining
 
     def show_target(self, target_name: str) -> None:
-        self.target_var.set(f"-> {target_name}")
+        self.target_var.set(target_name)
+        self._show_target_card(bool(target_name))
+
+    def _show_target_card(self, shown: bool) -> None:
+        """Hide the destination box outright when there is no destination.
+
+        An empty box with a live-looking "Trocar..." button in it reads as
+        something being wrong rather than as nothing being loaded.
+        """
+        if shown:
+            self._target_card.grid()
+        else:
+            self._target_card.grid_remove()
 
     def show_progress(self, event) -> None:
-        self.bar.configure(maximum=100)
+        self.bar.configure(maximum=100, style="Disc.Horizontal.TProgressbar")
         self.bar["value"] = event.percent
         self.file_var.set(event.current_file)
         self.progress_var.set(
+            f"{event.percent:.0f}%  -  "
             f"{format_bytes(event.copied_bytes)} / {format_bytes(event.total_bytes)}"
             f"  -  {format_speed(event.bytes_per_second)}"
             f"  -  faltam {format_duration(event.seconds_remaining)}"
@@ -208,12 +294,12 @@ class DiscPanel(ttk.LabelFrame):
     def show_trouble(self, message: str) -> None:
         """Surface the way out of a disc that is not going to finish."""
         self.trouble_var.set(
-            f"{message}\nVoce pode marcar este disco como defeituoso e seguir "
-            "para o proximo."
+            f"{theme.GLYPH['warning']}  {message}\n\nVoce pode marcar este disco como "
+            "defeituoso e seguir para o proximo."
         )
         if not self._trouble_shown:
-            self.trouble_label.grid(row=7, column=0, sticky="ew", pady=(10, 0))
-            self.corrupt_button.pack(side="left", padx=(0, 8))
+            self.trouble_label.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+            self.corrupt_button.pack(side="left", padx=(6, 0))
             self._trouble_shown = True
 
     def clear_trouble(self) -> None:

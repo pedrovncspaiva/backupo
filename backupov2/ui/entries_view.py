@@ -14,6 +14,7 @@ from typing import Callable
 from ..core import validate_folder_name
 from ..jobmodel import EntryStatus, Job
 from ..strings import kind_label, status_label
+from . import theme
 from .widgets import CellEditor, format_bytes
 
 COLUMNS = ("index", "group", "folder", "status", "kind", "label", "files", "size", "finished")
@@ -29,33 +30,49 @@ HEADINGS = {
     "finished": "Concluido",
 }
 WIDTHS = {
-    "index": 40,
-    "group": 150,
-    "folder": 260,
-    "status": 86,
-    "kind": 58,
-    "label": 120,
+    "index": 44,
+    "group": 130,
+    "folder": 240,
+    "status": 118,
+    "kind": 56,
+    "label": 110,
     "files": 70,
     "size": 80,
-    "finished": 120,
+    "finished": 118,
 }
 
 COLLECT_ON_LABEL = "Acumular discos nesta pasta"
 COLLECT_OFF_LABEL = "Parar de acumular nesta pasta"
 
+EMPTY_MESSAGE = (
+    "Nenhuma pasta na fila ainda.\n\n"
+    "Use  ＋ Adicionar pastas...  para colar a lista,\n"
+    "ou  \U0001f4f7 Importar de fotos...  para ler o protocolo de entrega."
+)
+
 # Floors, so dragging one column wider squeezes its neighbours only so far and
 # a heading can always still be read. Below these the horizontal scrollbar
 # takes over instead of the text collapsing to nothing.
 MIN_WIDTHS = {
-    "index": 34,
+    "index": 38,
     "group": 90,
     "folder": 140,
-    "status": 70,
+    "status": 100,
     "kind": 46,
     "label": 70,
-    "files": 52,
-    "size": 60,
-    "finished": 90,
+    "files": 54,
+    "size": 62,
+    "finished": 96,
+}
+
+# A dot in front of the word, so a row's situation survives a screenshot, a
+# projector, and colour-blind eyes - colour alone was carrying it before.
+STATUS_DOTS = {
+    EntryStatus.PENDING: theme.STATUS_DOT["pending"],
+    EntryStatus.IN_PROGRESS: theme.STATUS_DOT["in_progress"],
+    EntryStatus.DONE: theme.STATUS_DOT["done"],
+    EntryStatus.SKIPPED: theme.STATUS_DOT["skipped"],
+    EntryStatus.FAILED: theme.STATUS_DOT["failed"],
 }
 
 
@@ -67,6 +84,7 @@ class EntriesView(ttk.Frame):
         on_command: Callable[[str, str], None],
         **kwargs,
     ) -> None:
+        kwargs.setdefault("style", "Card.TFrame")
         super().__init__(master, **kwargs)
         self.on_rename = on_rename
         self.on_command = on_command
@@ -77,12 +95,26 @@ class EntriesView(ttk.Frame):
         self._collecting: set[str] = set()
 
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        # A title strip, so the two panes read as two named things rather than
+        # a table that happens to sit next to a panel.
+        header = tk.Frame(self, background=theme.SURFACE, padx=12, pady=8)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew")
+        header.columnconfigure(1, weight=1)
+        tk.Label(header, text="Fila de pastas", font=theme.FONT_SUBTITLE,
+                 background=theme.SURFACE, foreground=theme.INK).grid(row=0, column=0,
+                                                                     sticky="w")
+        self.hint_var = tk.StringVar(
+            value="Duplo clique renomeia  -  botao direito abre todas as acoes")
+        tk.Label(header, textvariable=self.hint_var, font=theme.FONT_SMALL,
+                 background=theme.SURFACE, foreground=theme.INK_MUTED).grid(
+            row=0, column=1, sticky="e")
 
         self.tree = ttk.Treeview(self, columns=COLUMNS, show="headings", selectmode="browse")
         for name in COLUMNS:
             self.tree.heading(name, text=HEADINGS[name])
-            anchor = "center" if name in ("index", "status", "kind") else "w"
+            anchor = "center" if name in ("index", "kind") else "w"
             if name in ("files", "size"):
                 anchor = "e"
             self.tree.column(
@@ -96,39 +128,49 @@ class EntriesView(ttk.Frame):
                 # Overflow is the horizontal scrollbar's job instead.
                 stretch=False,
             )
-        self.tree.grid(row=0, column=0, sticky="nsew")
+        self.tree.grid(row=1, column=0, sticky="nsew")
 
         vertical = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        vertical.grid(row=0, column=1, sticky="ns")
+        vertical.grid(row=1, column=1, sticky="ns")
         # The columns are wider than the pane, so without this the table simply
         # squeezes and a widened column has nowhere to go.
         horizontal = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
-        horizontal.grid(row=1, column=0, sticky="ew")
+        horizontal.grid(row=2, column=0, sticky="ew")
         self.tree.configure(
             yscrollcommand=vertical.set, xscrollcommand=horizontal.set
         )
 
-        self.tree.tag_configure("done", foreground="#0b6b3a")
-        self.tree.tag_configure("review", foreground="#8a5a00")
-        self.tree.tag_configure("failed", foreground="#a4161a")
-        self.tree.tag_configure("skipped", foreground="#6b7280")
-        self.tree.tag_configure("working", font=("Segoe UI", 9, "bold"))
-        self.tree.tag_configure("next", background="#dbeafe")
+        # An empty table that says nothing looks broken. This says what to do
+        # next, and is lifted away the moment there is a row to show.
+        self.empty_label = tk.Label(
+            self.tree, text=EMPTY_MESSAGE, font=theme.FONT_BODY,
+            background=theme.SURFACE, foreground=theme.INK_MUTED, justify="center",
+        )
+        self._show_empty(True)
+
+        self.tree.tag_configure("done", foreground=theme.SUCCESS)
+        self.tree.tag_configure("review", foreground=theme.WARNING)
+        self.tree.tag_configure("failed", foreground=theme.DANGER)
+        self.tree.tag_configure("skipped", foreground=theme.INK_MUTED)
+        self.tree.tag_configure("working", font=theme.FONT_BODY_BOLD,
+                                foreground=theme.BRAND_DEEP)
+        self.tree.tag_configure("next", background=theme.BRAND_TINT)
         # Loud on purpose: while this is on, every disc goes here no matter
         # what the list order says, and that has to be impossible to miss.
         self.tree.tag_configure(
-            "collecting", background="#fde68a", font=("Segoe UI", 9, "bold")
+            "collecting", background=theme.AMBER_TINT, font=theme.FONT_BODY_BOLD
         )
         # Alternating bands per EG, so where one group ends and the next
         # begins is visible at a glance rather than inferred from the text.
-        self.tree.tag_configure("bandA", background="#ffffff")
-        self.tree.tag_configure("bandB", background="#f6f7f9")
+        self.tree.tag_configure("bandA", background=theme.SURFACE)
+        self.tree.tag_configure("bandB", background=theme.STRIPE)
 
         self.tree.bind("<Double-1>", self._begin_edit)
         self.tree.bind("<Button-3>", self._popup)
         self.tree.bind("<Alt-Up>", lambda e: self._emit("move_up"))
         self.tree.bind("<Alt-Down>", lambda e: self._emit("move_down"))
         self.tree.bind("<Delete>", lambda e: self._emit("delete"))
+        self.tree.bind("<Return>", lambda e: self._emit("send_here"))
 
         self.menu = tk.Menu(self, tearoff=0)
         self._collect_index = 1  # patched per-popup to match the clicked row
@@ -190,6 +232,20 @@ class EntriesView(ttk.Frame):
 
     # -- rendering --------------------------------------------------------
 
+    def clear(self) -> None:
+        """Empty the table with no job to show - closing one, with no other
+        open yet to refresh() against."""
+        self.tree.delete(*self.tree.get_children())
+        self._protected = None
+        self._collecting = set()
+        self._show_empty(True)
+
+    def _show_empty(self, empty: bool) -> None:
+        if empty:
+            self.empty_label.place(relx=0.5, rely=0.45, anchor="center")
+        else:
+            self.empty_label.place_forget()
+
     def refresh(self, job: Job, working_entry_id: str | None = None) -> None:
         """Redraw from the job. Cheap enough for the list sizes involved."""
         self._protected = working_entry_id
@@ -218,20 +274,6 @@ class EntriesView(ttk.Frame):
                     files += f" (!{result.files_failed})"
             size = format_bytes(result.bytes_copied) if result and result.bytes_copied else ""
             finished = (entry.finished_utc or "").replace("T", " ").rstrip("Z")
-            # The plain status would read "concluida" on a folder that is in
-            # fact still open for the next disc - say what is actually true.
-            if entry.collecting:
-                situation = (
-                    f"acumulando ({entry.disc_count})"
-                    if entry.disc_count
-                    else "acumulando"
-                )
-            elif entry.error == "disc_corrupted":
-                # "pulada" alone loses the one thing that matters about this
-                # row: the disc is bad, not merely postponed.
-                situation = f"{status_label(entry.status)} (defeito)"
-            else:
-                situation = status_label(entry.status)
 
             self.tree.insert(
                 "",
@@ -243,7 +285,7 @@ class EntriesView(ttk.Frame):
                     # where it changes reads like the sheet it came from.
                     entry.group if entry.group != previous_group else "",
                     entry.folder_name,
-                    situation,
+                    self._situation(entry),
                     kind_label(entry.disc_kind),
                     entry.media.label if entry.media else "",
                     files,
@@ -254,9 +296,29 @@ class EntriesView(ttk.Frame):
             )
             previous_group = entry.group
 
+        self._show_empty(not job.entries)
         if previous and self.tree.exists(previous):
             self.tree.selection_set(previous)
         self.tree.yview_moveto(scroll[0])
+
+    @staticmethod
+    def _situation(entry) -> str:
+        """What is actually true about this row, in one short phrase."""
+        # The plain status would read "concluida" on a folder that is in
+        # fact still open for the next disc - say what is actually true.
+        if entry.collecting:
+            dot = theme.STATUS_DOT["collecting"]
+            return (
+                f"{dot} acumulando ({entry.disc_count})"
+                if entry.disc_count
+                else f"{dot} acumulando"
+            )
+        dot = STATUS_DOTS.get(entry.status, theme.STATUS_DOT["pending"])
+        if entry.error == "disc_corrupted":
+            # "pulada" alone loses the one thing that matters about this
+            # row: the disc is bad, not merely postponed.
+            return f"{dot} {status_label(entry.status)} (defeito)"
+        return f"{dot} {status_label(entry.status)}"
 
     @staticmethod
     def _tags_for(entry, next_id: str | None, band: str | None = None) -> tuple[str, ...]:
@@ -282,6 +344,20 @@ class EntriesView(ttk.Frame):
         return tuple(tags)
 
     # -- inline rename ----------------------------------------------------
+
+    def begin_rename(self, entry_id: str) -> None:
+        """Open the inline editor from somewhere other than a double click.
+
+        Scrolled into view first: the editor is placed over the cell's bbox,
+        and a row that is off screen has no bbox to place it on.
+        """
+        if not self.tree.exists(entry_id) or entry_id == self._protected:
+            return
+        self.tree.selection_set(entry_id)
+        self.tree.see(entry_id)
+        self.tree.update_idletasks()
+        current = self.tree.set(entry_id, "folder")
+        self._editor = CellEditor(self.tree, entry_id, "folder", current, self._commit_edit)
 
     def _begin_edit(self, event) -> str | None:
         item = self.tree.identify_row(event.y)
