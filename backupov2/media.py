@@ -93,9 +93,21 @@ class OpticalScanner(Protocol):
     def scan(self) -> list[MediaInfo]:
         ...
 
+    def drives(self) -> list[str]:
+        """Every optical drive, as "D:", loaded or not.
+
+        Separate from ``scan`` because a pool of one runner per drive has to
+        know the drives exist before any disc is in them - otherwise the app
+        cannot say "put the next one in E:".
+        """
+        ...
+
 
 class Win32Scanner:
     """The real scanner: enumerate optical drives and read any loaded disc."""
+
+    def drives(self) -> list[str]:
+        return [str(root)[:2].upper() for root in winapi.optical_drive_roots()]
 
     def scan(self) -> list[MediaInfo]:
         found: list[MediaInfo] = []
@@ -126,9 +138,22 @@ class FakeScanner:
     to describe the interesting transitions.
     """
 
-    def __init__(self, script: Sequence[Sequence[MediaInfo]] | None = None) -> None:
+    def __init__(
+        self,
+        script: Sequence[Sequence[MediaInfo]] | None = None,
+        drives: Sequence[str] | None = None,
+    ) -> None:
         self.script = [list(step) for step in (script or [])]
         self.calls = 0
+        self._drives = [d.upper() for d in drives] if drives else None
+
+    def drives(self) -> list[str]:
+        """The drives named at construction, or every drive the script ever
+        mentions - so a test that only cares about discs need not list them."""
+        if self._drives is not None:
+            return list(self._drives)
+        seen = {media.drive for step in self.script for media in step}
+        return sorted(seen)
 
     def scan(self) -> list[MediaInfo]:
         if not self.script:

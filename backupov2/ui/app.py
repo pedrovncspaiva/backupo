@@ -34,6 +34,7 @@ from ..runner import (
     Ejected,
     EntryUpdated,
     JobComplete,
+    DrivePool,
     JobRunner,
     LogLine,
     NoTarget,
@@ -64,6 +65,9 @@ TICK_MS = 100
 
 # How much of the window the disc panel keeps when the window first opens.
 DISC_PANEL_WIDTH = 380
+# Wider with several drives: a compact panel puts all five controls on one
+# line, and the last of them falls off the edge at the single-drive width.
+DISC_PANEL_WIDTH_MULTI = 436
 
 # How the drive's state reads in the status bar.
 STATE_TONES = {
@@ -99,9 +103,13 @@ class BackupApp(tk.Tk):
         theme.apply_window_icon(self)
 
         self.store: JobStore | None = None
-        self.runner: JobRunner | None = None
-        self.current_media = None
+        self.pool: DrivePool | None = None
+        # The disc loaded in each drive, keyed by drive letter. One entry with
+        # an empty key when there is a single unbound runner.
+        self.media_by_drive: dict[str, object] = {}
         self._help_window: HelpWindow | None = None
+        # JobComplete arrives once per drive; the batch only ends once.
+        self._completion_announced = False
 
         self.destination_var = tk.StringVar()
         self.parent_var = tk.StringVar()
@@ -417,8 +425,15 @@ class BackupApp(tk.Tk):
         )
         middle.add(self.entries_view, weight=4)
 
-        self.disc_panel = DiscPanel(middle, on_command=self._disc_command)
-        middle.add(self.disc_panel, weight=2)
+        # One panel per drive, stacked. The container exists even with a
+        # single drive so the rebuild below has one thing to empty, and a
+        # second drive appearing costs a repack rather than a re-layout.
+        self.drives_pane = ttk.Frame(middle, style="TFrame")
+        self.drives_pane.columnconfigure(0, weight=1)
+        middle.add(self.drives_pane, weight=2)
+        self.disc_panels: dict[str, DiscPanel] = {}
+        self._drive_pane_width = DISC_PANEL_WIDTH
+        self._build_disc_panels([""])
 
         # The table asks for the full width of all nine columns, so the sash
         # starts pinned to the right edge and the disc panel opens clipped.
@@ -426,11 +441,59 @@ class BackupApp(tk.Tk):
         # placed by hand once the window has a real width.
         self.after(120, self._place_sash)
 
+    def _build_disc_panels(self, drives: list[str]) -> None:
+        """Lay out one panel per drive, stacked in the right pane.
+
+        Rebuilt rather than reconfigured when the drive list changes, because
+        a panel is bound to its drive from construction - the drive is in its
+        heading, in its commands and in every event routed to it.
+        """
+        for panel in self.disc_panels.values():
+            panel.destroy()
+        self.disc_panels = {}
+        for row, drive in enumerate(drives):
+            panel = DiscPanel(
+                self.drives_pane,
+                on_command=lambda command, d=drive: self._disc_command(command, d),
+                drive=drive,
+                compact=len(drives) > 1,
+            )
+            panel.grid(row=row, column=0, sticky="nsew", pady=(0, 6) if row else 0)
+            self.drives_pane.rowconfigure(row, weight=1)
+            self.disc_panels[drive] = panel
+        # Rows left over from a longer previous list must not keep their
+        # weight, or the pane reserves space for panels that no longer exist.
+        for row in range(len(drives), len(drives) + 4):
+            self.drives_pane.rowconfigure(row, weight=0)
+        # Two panels need the window's height more than the log tabs do. The
+        # log is still there, still scrolls, and Exibir can hide it outright.
+        self.rowconfigure(5, weight=1 if len(drives) > 1 else 2)
+        self._drive_pane_width = (
+            DISC_PANEL_WIDTH_MULTI if len(drives) > 1 else DISC_PANEL_WIDTH
+        )
+        self.after(120, self._place_sash)
+
+    @property
+    def disc_panel(self) -> DiscPanel:
+        """The first panel. Kept for the single-drive paths and the tests,
+        which have exactly one and no reason to name it."""
+        return next(iter(self.disc_panels.values()))
+
+    def _panel_for(self, drive: str) -> DiscPanel | None:
+        """The panel an event belongs to, tolerating a drive that has gone.
+
+        With one unbound runner every event arrives with an empty drive and
+        belongs to the only panel there is.
+        """
+        if not drive:
+            return self.disc_panel if self.disc_panels else None
+        return self.disc_panels.get(drive)
+
     def _place_sash(self) -> None:
         try:
             total = self.middle.winfo_width()
             if total > 600:
-                self.middle.sashpos(0, total - DISC_PANEL_WIDTH)
+                self.middle.sashpos(0, total - self._drive_pane_width)
         except tk.TclError:  # pragma: no cover - window gone before it ran
             pass
 
@@ -613,9 +676,13 @@ class BackupApp(tk.Tk):
             self._set_collecting(collecting.entry_id, False)
 
     def _current_entry(self):
-        if self.store is None or self.runner is None:
+        return self._entry_of(self.runner)
+
+    def _entry_of(self, runner):
+        """The folder a given drive is aiming at."""
+        if self.store is None or runner is None:
             return None
-        entry_id = self.runner.current_entry_id
+        entry_id = runner.current_entry_id
         return self.store.job.entry_by_id(entry_id) if entry_id else None
 
     def _open_parent_folder(self) -> None:
@@ -681,6 +748,17 @@ class BackupApp(tk.Tk):
             store.save()
         self._refresh()
 
+    def make_scanner(self):
+        """The optical scanner the pool will use.
+
+        A seam, not a setting: every other collaborator in this app is
+        injected so a whole session can be replayed without hardware, and the
+        pool made the scanner the one thing that decided how many drive
+        panels exist. A test with no optical drive in the machine would
+        otherwise get a different window from a test on a machine with two.
+        """
+        return Win32Scanner()
+
     def _attach(self, store: JobStore) -> None:
         self.store = store
         self.destination_var.set(store.job.destination_root)
@@ -689,13 +767,24 @@ class BackupApp(tk.Tk):
         self.log_view.clear()
         self.problems.clear()
 
-        self.runner = JobRunner(
+        scanner = self.make_scanner()
+        self.pool = DrivePool(
             store=store,
-            scanner=Win32Scanner(),
+            scanner=scanner,
             ejector=Win32Ejector(),
             executor=ThreadExecutor(),
         )
-        self.runner.start()
+        # A machine with no optical drive at all still has to open a job, so
+        # the pool is allowed to be empty and the window keeps one panel to
+        # say nothing is there.
+        self._build_disc_panels(self.pool.drives or [""])
+        self.entries_view.show_drive_column(len(self.pool.drives) > 1)
+        if len(self.pool.drives) > 1:
+            self.log(
+                f"{len(self.pool.drives)} unidades encontradas "
+                f"({', '.join(self.pool.drives)}). Os discos serao copiados em paralelo."
+            )
+        self.pool.start()
         self._set_drive_chip(RunnerState.IDLE, "Iniciando...")
         self._set_controls_enabled(True)
         self._refresh()
@@ -711,7 +800,7 @@ class BackupApp(tk.Tk):
         """
         if self.store is None:
             return
-        if self.runner is not None and self.runner.is_busy:
+        if self.pool is not None and self.pool.is_busy:
             if not messagebox.askyesno(
                 "Copia em andamento",
                 "Cancelar a copia atual e fechar este trabalho?\n\n"
@@ -719,12 +808,15 @@ class BackupApp(tk.Tk):
                 "reaberto em Recentes.",
             ):
                 return
-            self.runner.cancel()
+            self.pool.cancel_all()
         self.store.save()
 
         self.store = None
-        self.runner = None
-        self.current_media = None
+        self.pool = None
+        self.media_by_drive = {}
+        self._completion_announced = False
+        self._build_disc_panels([""])
+        self.entries_view.show_drive_column(False)
         self.parent_var.set("")
         self.log_view.clear()
         self.problems.clear()
@@ -745,7 +837,7 @@ class BackupApp(tk.Tk):
         """
         if self.store is None:
             return
-        if self.runner is not None and self.runner.is_busy:
+        if self.pool is not None and self.pool.is_busy:
             messagebox.showinfo(
                 "Copia em andamento",
                 "Aguarde o fim da copia atual antes de limpar os arquivos de controle.",
@@ -1056,36 +1148,81 @@ class BackupApp(tk.Tk):
         except OSError:
             pass
 
+    # -- which drive a command is for -------------------------------------
+
+    # Whose turn it is when a keyboard shortcut does not name a drive. States
+    # that are waiting on a decision come first - those are the ones a user
+    # reaches for the keyboard about - then a copy in flight, then anything.
+    _ATTENTION_ORDER = (
+        RunnerState.DUPLICATE_WARNING,
+        RunnerState.NO_TARGET,
+        RunnerState.ERROR_HOLD,
+        RunnerState.GRACE_COUNTDOWN,
+        RunnerState.PAUSED,
+        RunnerState.WORKING,
+    )
+
+    @property
+    def runner(self) -> JobRunner | None:
+        """The drive a command belongs to when nothing says which.
+
+        With one drive this is simply that drive, and every path through the
+        app behaves as it always did.
+        """
+        return self._runner_for(None)
+
+    def _runner_for(self, drive: str | None) -> JobRunner | None:
+        if self.pool is None or not self.pool.runners:
+            return None
+        if drive:
+            return self.pool.runner_for(drive)
+        for state in self._ATTENTION_ORDER:
+            for name in self.pool.drives:
+                if self.pool.runners[name].state is state:
+                    return self.pool.runners[name]
+        return self.pool.runners[self.pool.drives[0]]
+
+    @property
+    def current_media(self):
+        """Any loaded disc, for the paths that only ask whether there is one."""
+        for drive in (self.pool.drives if self.pool else []):
+            found = self.media_by_drive.get(drive)
+            if found is not None:
+                return found
+        return self.media_by_drive.get("")
+
     # -- disc panel commands ----------------------------------------------
 
-    def _disc_command(self, command: str) -> None:
-        if self.runner is None:
+    def _disc_command(self, command: str, drive: str | None = None) -> None:
+        runner = self._runner_for(drive)
+        if runner is None:
             return
         if command == "start_now":
-            self.runner.start_now()
+            runner.start_now()
         elif command == "skip_disc":
-            self.runner.skip_disc()
+            runner.skip_disc()
         elif command == "cancel":
-            self.runner.cancel()
+            runner.cancel()
         elif command == "eject":
-            self.runner.eject_now()
+            runner.eject_now()
         elif command == "mark_corrupted":
-            self._mark_corrupted()
+            self._mark_corrupted(runner)
         elif command == "pause":
             # is_paused, not the state: a held copy stays in WORKING, so the
             # state alone would send "Retomar" back into pause().
-            if self.runner.is_paused:
-                self.runner.resume()
+            if runner.is_paused:
+                runner.resume()
             else:
-                self.runner.pause()
+                runner.pause()
         elif command == "send_to":
-            if self.store is None or self.runner is None:
+            if self.store is None:
                 return
             # The picker is a modal dialog, but Tk's nested event loop still
             # runs our after() pump underneath it - without pausing here, a
             # countdown in progress can reach zero and start copying into the
-            # wrong folder while this dialog is still open.
-            self.runner.pause()
+            # wrong folder while this dialog is still open. With two drives
+            # that is twice as likely, and only this one is held.
+            runner.pause()
             dialog = SendToDialog(self, self.store.job)
             entry_id = dialog.show()
             if entry_id:
@@ -1093,20 +1230,20 @@ class BackupApp(tk.Tk):
                 # recorded as a one-off and only the ones after it pooled.
                 if dialog.keep_collecting:
                     self._set_collecting(entry_id, True)
-                self.runner.send_to(entry_id)
+                runner.send_to(entry_id)
             else:
-                self.runner.resume()
+                runner.resume()
 
-    def _mark_corrupted(self) -> None:
+    def _mark_corrupted(self, runner: JobRunner) -> None:
         """Confirm before writing a disc off - this one leaves a record.
 
         Skip and cancel are interruptions you can undo by putting the disc
         back. This marks the folder failed and writes a report into it, so it
         is worth one question first.
         """
-        if self.runner is None or self.store is None:
+        if self.store is None:
             return
-        entry = self._current_entry()
+        entry = self._entry_of(runner)
         name = self._entry_label(entry) or "esta pasta"
         if not messagebox.askyesno(
             "Marcar disco como defeituoso",
@@ -1119,7 +1256,7 @@ class BackupApp(tk.Tk):
             icon="warning",
         ):
             return
-        self.runner.mark_corrupted()
+        runner.mark_corrupted()
 
     def _toggle_auto(self) -> None:
         if self.store is None:
@@ -1193,73 +1330,129 @@ class BackupApp(tk.Tk):
 
     def _pump(self) -> None:
         """The only place Tk widgets are touched in response to runner work."""
-        if self.runner is not None:
-            self.runner.tick()
-            for event in self.runner.drain():
+        if self.pool is not None:
+            self.pool.tick()
+            for event in self.pool.drain():
                 self._handle(event)
         self.after(TICK_MS, self._pump)
 
     def _poll(self) -> None:
-        if self.runner is not None:
+        if self.pool is not None:
             try:
-                self.runner.poll()
+                self.pool.poll()
             except Exception as exc:  # a polling glitch must not kill the app
                 self.log(f"Falha ao verificar a unidade: {exc}", "error")
         self.after(POLL_MS, self._poll)
 
     def _handle(self, event) -> None:
+        """Route one event to the panel of the drive it came from.
+
+        Every event is stamped with its drive by JobRunner.emit, so nothing
+        here has to guess. A drive whose panel has since been rebuilt - the
+        job was closed mid-flight - simply has nowhere to draw, and the event
+        is dropped rather than painted onto another drive's panel.
+        """
+        panel = self._panel_for(event.drive)
+        runner = self._runner_for(event.drive or None)
+        if panel is None:
+            return
+
         if isinstance(event, StateChanged):
-            self.disc_panel.show_state(
+            panel.show_state(
                 event.state,
                 event.detail,
-                paused=self.runner.is_paused if self.runner else False,
+                paused=runner.is_paused if runner else False,
             )
-            self._set_drive_chip(event.state)
+            if event.state in (RunnerState.READY_NO_DISC, RunnerState.IDLE):
+                self.media_by_drive.pop(event.drive, None)
+            self._paint_drive_chip()
             if event.state is RunnerState.JOB_COMPLETE:
                 self.log("Backup concluido.")
         elif isinstance(event, DiscDetected):
-            self.current_media = event.media
-            self.disc_panel.show_disc(event.media, event.kind, event.reason)
+            self.media_by_drive[event.drive] = event.media
+            panel.show_disc(event.media, event.kind, event.reason)
         elif isinstance(event, DiscSized):
-            self.disc_panel.show_size(event.file_count, event.total_bytes)
+            panel.show_size(event.file_count, event.total_bytes)
         elif isinstance(event, CountdownTick):
-            entry = self._current_entry()
-            self.disc_panel.show_countdown(
+            entry = self._entry_of(runner)
+            panel.show_countdown(
                 event.remaining,
                 event.total,
                 self._target_label(entry) or event.target_name,
             )
         elif isinstance(event, Progress):
-            self.disc_panel.show_progress(event)
+            panel.show_progress(event)
         elif isinstance(event, EntryUpdated):
             self._refresh()
         elif isinstance(event, DiscFinished):
-            self.disc_panel.show_message(
+            panel.show_message(
                 f"{event.files_copied} arquivo(s), {format_bytes(event.bytes_copied)}"
             )
             self._refresh()
         elif isinstance(event, DiscTrouble):
-            self.disc_panel.show_trouble(event.message)
+            panel.show_trouble(event.message)
         elif isinstance(event, DiscFailed):
-            self.problems.append(event.message, "error")
+            self.problems.append(self._with_drive(event.drive, event.message), "error")
             self._refresh()
         elif isinstance(event, DuplicateWarning):
-            self._ask_duplicate(event)
+            self._ask_duplicate(event, runner)
         elif isinstance(event, NoTarget):
-            self._ask_no_target(event)
+            self._ask_no_target(event, runner)
         elif isinstance(event, Ejected):
             if not event.ok:
-                self.log("A bandeja pode nao ter aberto; remova o disco manualmente.", "warn")
+                self.log(
+                    self._with_drive(
+                        event.drive,
+                        "A bandeja pode nao ter aberto; remova o disco manualmente.",
+                    ),
+                    "warn",
+                )
         elif isinstance(event, LogLine):
-            self.log(event.message, event.level)
+            self.log(self._with_drive(event.drive, event.message), event.level)
         elif isinstance(event, JobComplete):
-            messagebox.showinfo("Backup concluido", "Todos os discos foram processados.")
+            # One JobComplete per drive would be three identical boxes on a
+            # three-drive machine; the job only finishes once.
+            if not self._completion_announced:
+                self._completion_announced = True
+                messagebox.showinfo(
+                    "Backup concluido", "Todos os discos foram processados."
+                )
+
+    def _with_drive(self, drive: str, message: str) -> str:
+        """Prefix a log line with its drive, but only when there are several -
+        with one drive the letter is on every line and says nothing."""
+        if drive and self.pool is not None and len(self.pool.drives) > 1:
+            return f"[{drive}] {message}"
+        return message
 
     def _set_drive_chip(self, state: RunnerState, text: str | None = None) -> None:
         self.drive_chip.configure(text=text or state_label(state))
         self.drive_chip.set_tone(STATE_TONES.get(state, "neutral"))
 
-    def _ask_duplicate(self, event) -> None:
+    def _paint_drive_chip(self) -> None:
+        """Summarise every drive in the status bar.
+
+        One chip with the busiest drive's state rather than one chip per
+        drive: the panels already say what each is doing in full, and the
+        status bar is the line you read without looking.
+        """
+        if self.pool is None or not self.pool.runners:
+            self._set_drive_chip(RunnerState.IDLE, "Sem trabalho")
+            return
+        runner = self._runner_for(None)
+        state = runner.state if runner else RunnerState.IDLE
+        label = state_label(state)
+        if len(self.pool.drives) > 1:
+            working = len(self.pool.busy_drives())
+            label = (
+                f"{working} de {len(self.pool.drives)} unidades copiando"
+                if working
+                else f"{label}  -  {len(self.pool.drives)} unidades"
+            )
+        self._set_drive_chip(state, label)
+
+    def _ask_duplicate(self, event, runner=None) -> None:
+        runner = runner or self.runner
         when = format_stamp(event.finished_utc)
         again = messagebox.askyesno(
             "Disco ja copiado",
@@ -1267,12 +1460,13 @@ class BackupApp(tk.Tk):
             + (f" em {when}" if when else "")
             + ".\n\nCopiar novamente para a proxima pasta pendente?",
         )
-        if again and self.runner:
-            self.runner.copy_anyway()
-        elif self.runner:
-            self.runner.skip_disc()
+        if again and runner:
+            runner.copy_anyway()
+        elif runner:
+            runner.skip_disc()
 
-    def _ask_no_target(self, event) -> None:
+    def _ask_no_target(self, event, runner=None) -> None:
+        runner = runner or self.runner
         if messagebox.askyesno(
             "Nenhuma pasta pendente",
             "Nao ha pasta pendente para este disco.\n\nAdicionar uma pasta agora?",
@@ -1280,10 +1474,10 @@ class BackupApp(tk.Tk):
             drafts = AddEntriesDialog(self, "Nova pasta para este disco").show()
             if drafts:
                 self._add_drafts(drafts)
-                if self.runner:
-                    self.runner.copy_anyway()
-        elif self.runner:
-            self.runner.skip_disc()
+                if runner:
+                    runner.copy_anyway()
+        elif runner:
+            runner.skip_disc()
 
     # -- refresh ----------------------------------------------------------
 
@@ -1291,8 +1485,11 @@ class BackupApp(tk.Tk):
         if self.store is None:
             return
         job = self.store.job
-        working = self.runner.current_entry_id if self.runner and self.runner.is_busy else None
-        self.entries_view.refresh(job, working_entry_id=working)
+        self.entries_view.refresh(
+            job,
+            working_entry_ids=self.pool.working_entry_ids() if self.pool else set(),
+            claimed_by=self.pool.claimed_by() if self.pool else {},
+        )
 
         pending_count = sum(1 for entry in job.entries if entry.is_open)
         self.status_var.set(
@@ -1300,10 +1497,29 @@ class BackupApp(tk.Tk):
         )
         self.saved_var.set(f"salvo as {format_stamp(job.updated_utc, '%H:%M:%S')}")
         self._paint_header()
+        self._paint_drive_chip()
 
-        pending = job.next_pending()
-        if pending is not None and self.runner and not self.runner.is_busy:
-            self.disc_panel.show_target(self._target_label(pending))
+        self._paint_expectations()
+
+    def _paint_expectations(self) -> None:
+        """Tell each drive which folder is coming to it.
+
+        This is the whole point of two drives being visible separately: the
+        operator needs to know that the disc in their hand belongs in E:, not
+        just that some drive wants a disc.
+        """
+        if self.pool is None:
+            return
+        expected = self.pool.expected()
+        for drive, panel in self.disc_panels.items():
+            runner = self.pool.runner_for(drive)
+            entry = expected.get(drive)
+            if runner is not None and runner.is_busy:
+                continue
+            if runner is not None and runner.current_entry_id:
+                panel.show_target(self._target_label(entry))
+            else:
+                panel.show_expected(self._target_label(entry) if entry else "")
 
     def _refresh_recent(self) -> None:
         self.recent_menu.delete(0, "end")
@@ -1328,14 +1544,14 @@ class BackupApp(tk.Tk):
     # -- shutdown ---------------------------------------------------------
 
     def _close(self) -> None:
-        if self.runner is not None and self.runner.is_busy:
+        if self.pool is not None and self.pool.is_busy:
             if not messagebox.askyesno(
                 "Copia em andamento",
                 "Cancelar a copia atual e sair?\n\n"
                 "O progresso ja gravado sera mantido e o trabalho podera ser retomado.",
             ):
                 return
-            self.runner.cancel()
+            self.pool.cancel_all()
         if self.store is not None:
             self.store.save()
         self.destroy()

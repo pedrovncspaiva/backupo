@@ -16,7 +16,8 @@ from tkinter import ttk
 
 from backupov2.jobmodel import EntryDraft, JobSettings
 from backupov2.jobstore import JobStore
-from backupov2.runner import RunnerState
+from backupov2.media import FakeScanner
+from backupov2.runner import LogLine, RunnerState, StateChanged
 from backupov2.ui import theme
 from backupov2.ui.app import BackupApp
 from backupov2.ui.menubar import JOB_ITEMS
@@ -36,6 +37,9 @@ class ShellCase(unittest.TestCase):
             self.app = BackupApp()
         except tk.TclError as exc:
             self.skipTest(f"no display available for Tk: {exc}")
+        # Pin the hardware: otherwise these build a different window on a
+        # laptop with no optical drive than on the machine with two.
+        self.app.make_scanner = lambda: FakeScanner([], drives=("D:",))
         self.app.withdraw()
         self.addCleanup(self.app.destroy)
 
@@ -477,6 +481,103 @@ class AssetTests(unittest.TestCase):
         self.addCleanup(root.destroy)
         style = theme.apply_theme(root)
         self.assertIn("Brand.Checkbutton.indicator", str(style.layout("TCheckbutton")))
+
+
+class MultiDriveTests(unittest.TestCase):
+    """The window with two optical drives in the machine."""
+
+    def setUp(self) -> None:
+        try:
+            self.app = BackupApp()
+        except tk.TclError as exc:
+            self.skipTest(f"no display available for Tk: {exc}")
+        self.app.make_scanner = lambda: FakeScanner([], drives=("D:", "E:"))
+        self.app.withdraw()
+        self.addCleanup(self.app.destroy)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dest = Path(self._tmp.name) / "dest"
+        self.dest.mkdir()
+
+    def open_job(self, entries=("Disco 01", "Disco 02", "Disco 03")) -> JobStore:
+        store = JobStore.create(
+            self.dest, "Lote", settings=JobSettings(),
+            local_root=Path(self._tmp.name) / "local",
+        )
+        store.job.add_entries([EntryDraft(name) for name in entries])
+        store.job.parent_path.mkdir(parents=True, exist_ok=True)
+        store.save()
+        self.app._attach(store)
+        return store
+
+    def test_one_panel_per_drive(self) -> None:
+        self.open_job()
+        self.assertEqual(sorted(self.app.disc_panels), ["D:", "E:"])
+
+    def test_each_panel_is_named_after_its_drive(self) -> None:
+        self.open_job()
+        self.assertEqual(self.app.disc_panels["E:"].drive, "E:")
+
+    def test_panels_go_compact_so_both_fit(self) -> None:
+        self.open_job()
+        self.assertTrue(all(p.compact for p in self.app.disc_panels.values()))
+
+    def test_the_drive_column_appears(self) -> None:
+        """Which drive has which folder is only a question with two."""
+        self.open_job()
+        shown = self.app.entries_view.tree.cget("displaycolumns")
+        self.assertIn("drive", shown)
+
+    def test_closing_the_job_returns_to_one_panel(self) -> None:
+        self.open_job()
+        self.app._close_job()
+        self.assertEqual(len(self.app.disc_panels), 1)
+        shown = self.app.entries_view.tree.cget("displaycolumns")
+        self.assertNotIn("drive", shown)
+
+    def test_an_event_paints_only_its_own_drive(self) -> None:
+        """Every event carries its drive, so a copy in D: must not repaint
+        the panel that belongs to E:."""
+        self.open_job()
+        before = self.app.disc_panels["E:"].state_var.get()
+        self.app._handle(StateChanged(RunnerState.WORKING, "Copiando", drive="D:"))
+        self.assertEqual(self.app.disc_panels["D:"].state_var.get(), "Copiando")
+        self.assertEqual(self.app.disc_panels["E:"].state_var.get(), before)
+
+    def test_an_event_from_a_vanished_drive_is_dropped(self) -> None:
+        """The job can be closed while a copy is unwinding; its last events
+        must not land on another drive's panel."""
+        self.open_job()
+        self.app._handle(StateChanged(RunnerState.WORKING, "Copiando", drive="Z:"))
+        for drive, panel in self.app.disc_panels.items():
+            with self.subTest(drive=drive):
+                self.assertNotEqual(panel.state_var.get(), "Copiando")
+
+    def test_log_lines_say_which_drive_they_came_from(self) -> None:
+        self.open_job()
+        self.app._handle(LogLine("Copiando", drive="E:"))
+        self.assertIn("[E:]", self.app.log_view.contents())
+
+    def test_a_command_reaches_the_drive_it_names(self) -> None:
+        self.open_job()
+        calls = []
+        self.app.pool.runners["E:"].skip_disc = lambda: calls.append("E:")
+        self.app.pool.runners["D:"].skip_disc = lambda: calls.append("D:")
+        self.app._disc_command("skip_disc", "E:")
+        self.assertEqual(calls, ["E:"])
+
+    def test_each_idle_drive_is_told_what_to_expect(self) -> None:
+        """The answer to "which disc goes in which drive"."""
+        self.open_job()
+        self.app._paint_expectations()
+        first = self.app.disc_panels["D:"].expect_var.get()
+        second = self.app.disc_panels["E:"].expect_var.get()
+        self.assertIn("Disco 01", first)
+        self.assertIn("Disco 02", second)
+
+    def test_the_batch_is_announced_once_not_once_per_drive(self) -> None:
+        self.open_job()
+        self.assertFalse(self.app._completion_announced)
 
 
 class StampTests(unittest.TestCase):

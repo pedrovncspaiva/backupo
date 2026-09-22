@@ -49,10 +49,26 @@ STATE_COLOURS = {
 
 
 class DiscPanel(ttk.Frame):
-    def __init__(self, master, on_command: Callable[[str], None], **kwargs) -> None:
+    def __init__(
+        self,
+        master,
+        on_command: Callable[[str], None],
+        drive: str = "",
+        compact: bool = False,
+        **kwargs,
+    ) -> None:
         kwargs.setdefault("style", "Card.TFrame")
         super().__init__(master, **kwargs)
         self.on_command = on_command
+        # Named after its drive once there is more than one of these on
+        # screen; with a single drive the letter is noise, since there is
+        # nothing to tell it apart from.
+        self.drive = drive.upper()
+        # Two of these share one window's height, and what does not fit gets
+        # scrolled past. Compact drops the parts a second panel can do
+        # without - the disc's own label, the captions - so that the parts it
+        # cannot (destination, progress, controls) are all on screen at once.
+        self.compact = compact
         self.columnconfigure(0, weight=1)
 
         self.state_var = tk.StringVar(value="Aguardando disco")
@@ -70,15 +86,34 @@ class DiscPanel(ttk.Frame):
         # moment - a disc going wrong - where reaching them matters most. A
         # Canvas scrolls instead, and the scrollbar only appears when it is
         # actually needed.
-        canvas = tk.Canvas(self, background=theme.SURFACE, highlightthickness=0)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        self.rowconfigure(0, weight=1)
+        # A bare tk.Canvas asks for 265px of height whatever is in it, and two
+        # of those stacked push the log tabs out of the window and then start
+        # overlapping the rows below. This is a *minimum*, not a size: the
+        # body is a canvas window item and never contributed to the request,
+        # so the panel still grows by weight wherever there is room. Small
+        # enough that two panels plus their pinned footers fit a 900px window.
+        canvas = tk.Canvas(self, background=theme.SURFACE, highlightthickness=0,
+                           height=34, width=240)
+        canvas.grid(row=1, column=0, sticky="nsew")
+        self.rowconfigure(0, weight=0)   # header: always visible
+        self.rowconfigure(1, weight=1)   # body: the part that scrolls
+        self.rowconfigure(2, weight=0)   # footer: always visible
         scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scroll.set)
         self._scrollbar = scroll
         self._canvas = canvas
 
-        body = tk.Frame(canvas, background=theme.SURFACE, padx=12, pady=10)
+        # Outside the scrolling canvas on purpose: how far along the copy is
+        # and the controls that stop it are the two things a user looks at
+        # this panel for. Everything above them can be scrolled past and
+        # nothing is lost - and with two panels sharing one window's height,
+        # something has to be.
+        self.footer = tk.Frame(self, background=theme.SURFACE)
+        self.footer.grid(row=2, column=0, sticky="ew")
+        self.footer.columnconfigure(0, weight=1)
+
+        body = tk.Frame(canvas, background=theme.SURFACE, padx=12,
+                        pady=6 if compact else 10)
         body.columnconfigure(0, weight=1)
         window = canvas.create_window((0, 0), window=body, anchor="nw")
 
@@ -94,34 +129,76 @@ class DiscPanel(ttk.Frame):
         canvas.bind("<Configure>", sync_body_width)
         canvas.bind("<MouseWheel>", self._on_mousewheel)
 
-        tk.Label(body, text="DISCO ATUAL", font=theme.FONT_SMALL_BOLD,
-                 background=theme.SURFACE, foreground=theme.INK_MUTED,
+        # The body scrolls; the footer below it does not. Everything that
+        # answers "which disc, in which drive, how far along" is pinned down
+        # there, and what is left here is context:
+        #   0 disc label   1 disc detail   2 trouble
+        # The heading and the state line sit above it, pinned, because a panel
+        # that cannot say which drive it is is not worth showing.
+        head = tk.Frame(self, background=theme.SURFACE, padx=12,
+                        pady=(6 if compact else 10))
+        head.grid(row=0, column=0, sticky="ew")
+        head.columnconfigure(0, weight=1)
+        tk.Label(head, text=f"UNIDADE {self.drive}" if self.drive else "DISCO ATUAL",
+                 font=theme.FONT_SMALL_BOLD, background=theme.SURFACE,
+                 foreground=theme.BRAND if self.drive else theme.INK_MUTED,
                  anchor="w").grid(row=0, column=0, sticky="w")
 
         self.state_label = tk.Label(
-            body, textvariable=self.state_var, font=(theme.UI_FAMILY, 13, "bold"),
+            head, textvariable=self.state_var,
+            font=theme.FONT_SUBTITLE if compact else (theme.UI_FAMILY, 13, "bold"),
             background=theme.SURFACE, foreground=theme.INK, anchor="w",
             wraplength=320, justify="left",
         )
         self.state_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
 
-        tk.Label(body, textvariable=self.disc_var, font=theme.FONT_BODY_BOLD,
-                 background=theme.SURFACE, foreground=theme.INK, anchor="w",
-                 wraplength=320, justify="left").grid(row=2, column=0, sticky="w",
-                                                      pady=(4, 0))
-        tk.Label(body, textvariable=self.detail_var, font=theme.FONT_SMALL,
-                 background=theme.SURFACE, foreground=theme.INK_SOFT, anchor="w",
-                 wraplength=320, justify="left").grid(row=3, column=0, sticky="w")
+        self._disc_label = tk.Label(
+            body, textvariable=self.disc_var, font=theme.FONT_BODY_BOLD,
+            background=theme.SURFACE, foreground=theme.INK, anchor="w",
+            wraplength=320, justify="left")
+        self._disc_label.grid(row=0, column=0, sticky="w")
+        self._detail_label = tk.Label(
+            body, textvariable=self.detail_var, font=theme.FONT_SMALL,
+            background=theme.SURFACE, foreground=theme.INK_SOFT, anchor="w",
+            wraplength=320, justify="left")
+        self._detail_label.grid(row=1, column=0, sticky="w")
+        if compact:
+            # Which disc is in the drive is on the disc in your hand; which
+            # folder it is going to is not.
+            self._disc_label.grid_remove()
+            self._detail_label.grid_remove()
+
+        # -- what to put in this drive next -------------------------------
+        # Only ever shown while the drive is empty and there is more than one
+        # of them. It is advice, not a rule: a disc put in the other drive
+        # still lands in the right folder, because a disc is identified after
+        # it goes in, never before. This exists so two drives can be kept
+        # straight, not to invent a way of getting it wrong.
+        self.expect_var = tk.StringVar(value="")
+        self.expect_card = tk.Frame(self.footer, background=theme.CANVAS,
+                                    padx=10, pady=7)
+        self.expect_card.grid(row=0, column=0, sticky="ew", padx=12, pady=(8, 0))
+        self.expect_card.columnconfigure(0, weight=1)
+        tk.Label(self.expect_card, text="PROXIMO NESTA UNIDADE",
+                 font=theme.FONT_SMALL_BOLD, background=theme.CANVAS,
+                 foreground=theme.INK_MUTED).grid(row=0, column=0, sticky="w")
+        tk.Label(self.expect_card, textvariable=self.expect_var,
+                 font=theme.FONT_BODY_BOLD, background=theme.CANVAS,
+                 foreground=theme.INK_SOFT, anchor="w", wraplength=290,
+                 justify="left").grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self.expect_card.grid_remove()
 
         # -- where this disc is going -------------------------------------
         # Stacked rather than side by side: this pane is the narrow one, and a
         # folder name plus a button on one line is what clips first.
-        target_card = tk.Frame(body, background=theme.BRAND_TINT, padx=10, pady=7)
-        target_card.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        target_card = tk.Frame(self.footer, background=theme.BRAND_TINT,
+                               padx=10, pady=7)
+        target_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(8, 0))
         target_card.columnconfigure(0, weight=1)
-        tk.Label(target_card, text="DESTINO DESTE DISCO", font=theme.FONT_SMALL_BOLD,
-                 background=theme.BRAND_TINT, foreground=theme.BRAND).grid(
-            row=0, column=0, sticky="w")
+        tk.Label(target_card,
+                 text="COPIANDO PARA" if compact else "DESTINO DESTE DISCO",
+                 font=theme.FONT_SMALL_BOLD, background=theme.BRAND_TINT,
+                 foreground=theme.BRAND).grid(row=0, column=0, sticky="w")
         self.send_button = ttk.Button(
             target_card, text="Trocar...", style="Tint.TButton",
             command=lambda: self.on_command("send_to")
@@ -139,18 +216,21 @@ class DiscPanel(ttk.Frame):
         # the drive they are an empty trough over two blank lines - which
         # reads as "0% copied" rather than "nothing loaded", and pushes the
         # buttons a third of the way down an otherwise empty pane.
-        self.progress_block = tk.Frame(body, background=theme.SURFACE)
-        self.progress_block.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        self.progress_block = tk.Frame(self.footer, background=theme.SURFACE)
+        self.progress_block.grid(row=2, column=0, sticky="ew", padx=12, pady=(8, 0))
         self.progress_block.columnconfigure(0, weight=1)
 
         self.bar = ttk.Progressbar(self.progress_block, mode="determinate", maximum=100,
                                    style="Disc.Horizontal.TProgressbar")
         self.bar.grid(row=0, column=0, sticky="ew")
 
-        tk.Label(self.progress_block, textvariable=self.file_var, font=theme.FONT_SMALL,
-                 background=theme.SURFACE, foreground=theme.INK_SOFT, anchor="w",
-                 wraplength=320, justify="left").grid(row=1, column=0, sticky="w",
-                                                      pady=(6, 0))
+        self._file_label = tk.Label(
+            self.progress_block, textvariable=self.file_var, font=theme.FONT_SMALL,
+            background=theme.SURFACE, foreground=theme.INK_SOFT, anchor="w",
+            wraplength=320, justify="left")
+        self._file_label.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        if compact:
+            self._file_label.grid_remove()
         tk.Label(self.progress_block, textvariable=self.progress_var, font=theme.FONT_SMALL,
                  background=theme.SURFACE, foreground=theme.INK_SOFT,
                  anchor="w").grid(row=2, column=0, sticky="w", pady=(2, 0))
@@ -181,15 +261,17 @@ class DiscPanel(ttk.Frame):
         self._trouble_shown = False
 
         # -- controls -----------------------------------------------------
-        self.buttons = tk.Frame(body, background=theme.SURFACE)
-        self.buttons.grid(row=9, column=0, sticky="ew", pady=(10, 0))
+        self.buttons = tk.Frame(self.footer, background=theme.SURFACE, padx=12,
+                                pady=5 if compact else 10)
+        self.buttons.grid(row=3, column=0, sticky="ew")
 
         primary = tk.Frame(self.buttons, background=theme.SURFACE)
         primary.pack(fill="x")
         self.start_button = ttk.Button(
             primary, style="Accent.TButton",
             command=lambda: self.on_command("start_now"))
-        theme.set_button_icon(self.start_button, "play", "Iniciar agora")
+        theme.set_button_icon(self.start_button, "play",
+                              "Iniciar" if compact else "Iniciar agora")
         self.start_button.pack(side="left")
         tip(self.start_button, "Nao esperar a contagem regressiva  (Espaco)")
 
@@ -200,26 +282,38 @@ class DiscPanel(ttk.Frame):
         self.pause_button.pack(side="left", padx=(8, 0))
         tip(self.pause_button, "Segurar tudo sem perder o progresso  (Ctrl+P)")
 
-        secondary = tk.Frame(self.buttons, background=theme.SURFACE)
-        secondary.pack(fill="x", pady=(6, 0))
+        # Compact puts all five controls on one line: the three that
+        # interrupt keep their icons and lose their words, which buys back the
+        # ~34px a second row costs - the difference between both panels
+        # showing their controls and the lower one having them clipped off.
+        # They keep their tooltips, and the Disco menu still spells them out.
+        if compact:
+            secondary = tk.Frame(primary, background=theme.SURFACE)
+            secondary.pack(side="right")
+        else:
+            secondary = tk.Frame(self.buttons, background=theme.SURFACE)
+            secondary.pack(fill="x", pady=(6, 0))
         self.skip_button = ttk.Button(
             secondary, style="Quiet.TButton",
             command=lambda: self.on_command("skip_disc"))
-        theme.set_button_icon(self.skip_button, "skip", "Pular disco")
-        self.skip_button.pack(side="left")
+        theme.set_button_icon(self.skip_button, "skip",
+                              "" if compact else "Pular disco")
+        self.skip_button.pack(side="left", padx=(0, 2) if compact else 0)
         tip(self.skip_button, "Deixar a pasta pendente e ejetar este disco")
 
         self.cancel_button = ttk.Button(
             secondary, style="Quiet.TButton",
             command=lambda: self.on_command("cancel"))
-        theme.set_button_icon(self.cancel_button, "stop", "Cancelar")
+        theme.set_button_icon(self.cancel_button, "stop",
+                              "" if compact else "Cancelar")
         self.cancel_button.pack(side="left", padx=(6, 0))
         tip(self.cancel_button, "Parar a copia e manter o disco na bandeja  (Esc)")
 
         self.eject_button = ttk.Button(
             secondary, style="Quiet.TButton",
             command=lambda: self.on_command("eject"))
-        theme.set_button_icon(self.eject_button, "eject", "Ejetar")
+        theme.set_button_icon(self.eject_button, "eject",
+                              "" if compact else "Ejetar")
         self.eject_button.pack(side="left", padx=(6, 0))
         tip(self.eject_button, "Abrir a bandeja agora  (Ctrl+J)")
 
@@ -256,9 +350,8 @@ class DiscPanel(ttk.Frame):
             self._scrollbar.grid_remove()
             self._canvas.yview_moveto(0)
 
-    def _reveal_controls(self) -> None:
-        """Scroll the pane to its buttons, if it has become tall enough to
-        need scrolling at all."""
+    def _reveal_trouble(self) -> None:
+        """Scroll the warning into view if the pane has outgrown itself."""
         self._update_scrollbar()
         if self._scrollbar.winfo_manager():
             self._canvas.yview_moveto(1.0)
@@ -359,6 +452,14 @@ class DiscPanel(ttk.Frame):
         self.target_var.set(target_name)
         self._show_target_card(bool(target_name))
 
+    def show_expected(self, folder_label: str) -> None:
+        """Advise what this drive should be fed next, or clear the advice."""
+        self.expect_var.set(folder_label)
+        if folder_label and self.drive and not self.target_var.get():
+            self.expect_card.grid()
+        else:
+            self.expect_card.grid_remove()
+
     def _show_progress_block(self, shown: bool) -> None:
         if shown:
             self.progress_block.grid()
@@ -379,6 +480,7 @@ class DiscPanel(ttk.Frame):
         """
         if shown:
             self._target_card.grid()
+            self.expect_card.grid_remove()
         else:
             self._target_card.grid_remove()
 
@@ -411,16 +513,13 @@ class DiscPanel(ttk.Frame):
         # the gap is in the string.
         self.trouble_var.set(f"  {message}" if self._trouble_icon is not None else message)
         if not self._trouble_shown:
-            self.trouble_label.grid(row=8, column=0, sticky="ew", pady=(8, 0))
+            self.trouble_label.grid(row=2, column=0, sticky="ew", pady=(8, 0))
             self.danger_row.pack(fill="x", pady=(6, 0))
             self._trouble_shown = True
-            # The warning box and the button that answers it are the two
-            # tallest things this pane ever holds, and they arrive together -
-            # so on a short window the button lands below the fold. A
-            # scrollbar the user has not noticed is the same as no button at
-            # all, so the pane scrolls itself to the controls. after_idle,
-            # because the two widgets above have not been measured yet.
-            self.after_idle(self._reveal_controls)
+            # The controls are pinned below the scroll area, so the button
+            # that answers this warning is already on screen. Only the
+            # warning text itself needs bringing into view.
+            self.after_idle(self._reveal_trouble)
 
     def clear_trouble(self) -> None:
         if not self._trouble_shown:

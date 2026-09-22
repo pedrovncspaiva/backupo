@@ -489,7 +489,7 @@ class Job:
 
     # -- queries ----------------------------------------------------------
 
-    def next_pending(self) -> DiscEntry | None:
+    def next_pending(self, *, ignoring: Iterable[str] = ()) -> DiscEntry | None:
         """The target for the next disc.
 
         Derived, never stored. Storing a "current disc" index instead is what
@@ -498,14 +498,32 @@ class Job:
         A folder set to collect wins over the list order for as long as the
         flag is on - which is the whole of the "keep feeding this one folder"
         behaviour, with no second pointer to keep in step.
+
+        ``ignoring`` skips entry ids another drive has already claimed. With
+        one drive it is empty and this behaves exactly as it always did; with
+        two, it is what stops both of them aiming at the same folder.
         """
+        skip = set(ignoring)
         collecting = self.collecting_entry()
         if collecting is not None:
-            return collecting
+            # Even "send every disc here" is one drive at a time: two workers
+            # writing into one folder would race over collision renaming.
+            return None if collecting.entry_id in skip else collecting
         for entry in self.entries:
-            if entry.status is EntryStatus.PENDING:
+            if entry.status is EntryStatus.PENDING and entry.entry_id not in skip:
                 return entry
         return None
+
+    def upcoming_pending(self, count: int) -> list[DiscEntry]:
+        """The next ``count`` folders in line, for showing each drive what it
+        should expect next. Advisory only - nothing is reserved by asking."""
+        if count <= 0:
+            return []
+        collecting = self.collecting_entry()
+        if collecting is not None:
+            return [collecting]
+        found = [e for e in self.entries if e.status is EntryStatus.PENDING]
+        return found[:count]
 
     def collecting_entry(self) -> DiscEntry | None:
         """The folder currently set to swallow every disc, if any."""

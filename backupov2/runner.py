@@ -40,7 +40,7 @@ from .core import (
     write_defect_report,
 )
 from .errors import BackupCancelled, ErrorClass, SourceLost, classify_os_error
-from .jobmodel import DiscKind, EntryResult, EntryStatus, utc_now
+from .jobmodel import DiscEntry, DiscKind, EntryResult, EntryStatus, utc_now
 from .jobstore import JobStore
 from .media import KindProbe, MatchStrength, MediaInfo, detect_disc_kind, identity_match
 
@@ -96,7 +96,11 @@ class RunnerState(str, Enum):
 
 @dataclass
 class Event:
-    pass
+    # Which drive this happened in, as "D:". Stamped by JobRunner.emit rather
+    # than by each construction site, so no event can be raised untagged. It
+    # stays "" for a runner that was not bound to one particular drive, which
+    # is every single-drive job.
+    drive: str = field(default="", kw_only=True)
 
 
 @dataclass
@@ -318,6 +322,47 @@ class UnavailableRipper:
 # --------------------------------------------------------------------------
 
 
+class ClaimRegistry:
+    """Which drive is currently aiming at which folder.
+
+    ``Job.next_pending`` is derived from the list rather than stored, which is
+    what makes skip and redirect free - but it also means two drives asked at
+    the same moment both get the same answer, and would copy two different
+    discs into one folder. A claim is the missing piece: held from the moment
+    a drive starts working towards a folder until it is finished with it.
+
+    Deliberately in memory only. A claim describes what is happening in a
+    drive right now, so it cannot outlive the session that made it - a job
+    file carrying stale claims would strand folders no drive was holding.
+    """
+
+    def __init__(self) -> None:
+        self._by_owner: dict[str, str] = {}
+
+    def claim(self, owner: str, entry_id: str) -> None:
+        self._by_owner[owner] = entry_id
+
+    def release(self, owner: str) -> None:
+        self._by_owner.pop(owner, None)
+
+    def held_by_others(self, owner: str) -> set[str]:
+        return {
+            entry_id
+            for holder, entry_id in self._by_owner.items()
+            if holder != owner
+        }
+
+    def owner_of(self, entry_id: str) -> str | None:
+        for holder, held in self._by_owner.items():
+            if held == entry_id:
+                return holder
+        return None
+
+    def as_dict(self) -> dict[str, str]:
+        """entry_id -> drive, for painting the folder list."""
+        return {entry_id: owner for owner, entry_id in self._by_owner.items()}
+
+
 @dataclass
 class _Work:
     """Everything the worker thread needs, and what it hands back."""
@@ -347,9 +392,18 @@ class JobRunner:
         clock: Callable[[], float] = time.monotonic,
         emit: Callable[[Event], None] | None = None,
         kind_probe: Callable[[Path, str], KindProbe] = detect_disc_kind,
+        drive: str = "",
+        claims: "ClaimRegistry | None" = None,
     ) -> None:
         self.store = store
         self.scanner = scanner
+        # Bound to one drive ("D:") this runner ignores discs in any other,
+        # which is what lets several of them share a scanner and a job. Empty
+        # means "whatever is loaded", the single-drive behaviour.
+        self.drive = drive.upper()
+        # Shared with the other drives' runners, so two of them never aim at
+        # the same folder. A registry of its own when there is only one.
+        self.claims = claims if claims is not None else ClaimRegistry()
         self.copier = copier or RealCopier()
         self.ripper = ripper or UnavailableRipper()
         self.ejector = ejector or NullEjector()
@@ -398,6 +452,11 @@ class JobRunner:
         return self.store.job
 
     def emit(self, event: Event) -> None:
+        # One place to stamp the drive, so every event the UI receives can be
+        # routed to the right panel without each call site remembering to say
+        # where it came from.
+        if self.drive and not event.drive:
+            event.drive = self.drive
         self.events.put(event)
         if self._emit_hook is not None:
             self._emit_hook(event)
@@ -517,7 +576,7 @@ class JobRunner:
         ):
             return
 
-        loaded = self.scanner.scan()
+        loaded = self._mine(self.scanner.scan())
 
         if self.state is RunnerState.WAIT_DISC_REMOVED:
             self._poll_removal(loaded)
@@ -576,11 +635,21 @@ class JobRunner:
         self._settle_count = 0
         self._identify(candidate)
 
-    def _pick_candidate(self, loaded: list[MediaInfo]) -> MediaInfo | None:
-        """With several drives loaded, take them in drive-letter order.
+    def _mine(self, loaded: list[MediaInfo]) -> list[MediaInfo]:
+        """Only the discs in the drive this runner was bound to.
 
-        One disc is processed at a time: the destination is normally a network
-        share, so copying two at once would only split the same bandwidth.
+        Unbound (drive="") it sees everything, which is the single-drive
+        behaviour: one runner, every drive, one disc at a time.
+        """
+        if not self.drive:
+            return loaded
+        return [media for media in loaded if media.drive == self.drive]
+
+    def _pick_candidate(self, loaded: list[MediaInfo]) -> MediaInfo | None:
+        """Take drives in letter order, so an unbound runner is deterministic.
+
+        Bound to a drive there is only ever one candidate; it is a pool of
+        runners, one per drive, that copies two discs at once - see DrivePool.
         """
         return sorted(loaded, key=lambda media: media.drive)[0] if loaded else None
 
@@ -620,6 +689,29 @@ class JobRunner:
         self.current_kind = DiscKind.UNKNOWN
         self.current_entry_id = None
         self._countdown_ends = None
+        # Whatever folder this drive was holding goes back to the pool. This
+        # is already the one place current_entry_id is cleared, so the claim
+        # cannot outlive the aim.
+        self.claims.release(self._owner)
+
+    # -- claiming a folder ------------------------------------------------
+
+    @property
+    def _owner(self) -> str:
+        """This drive's key in the shared claim registry."""
+        return self.drive or "*"
+
+    def _take_target(self) -> DiscEntry | None:
+        """The next folder this drive may work towards, claimed as it is taken.
+
+        Skipping what other drives hold is the whole difference between one
+        drive and several: without it both would be handed the same answer by
+        next_pending() and copy two discs into one folder.
+        """
+        target = self.job.next_pending(ignoring=self.claims.held_by_others(self._owner))
+        if target is not None:
+            self.claims.claim(self._owner, target.entry_id)
+        return target
 
     # -- identification ---------------------------------------------------
 
@@ -656,7 +748,7 @@ class JobRunner:
             )
             return
 
-        target = self.job.next_pending()
+        target = self._take_target()
         if target is None:
             self._set_state(RunnerState.NO_TARGET, "Nenhuma pasta pendente")
             self.emit(NoTarget(media))
@@ -897,6 +989,7 @@ class JobRunner:
             return
         self._paused_from = None
         self.current_entry_id = entry_id
+        self.claims.claim(self._owner, entry_id)
         self._countdown_ends = None
         self.log(f"Disco redirecionado para '{entry.folder_name}'.")
         self._begin_work(entry, self.current_media)
@@ -946,7 +1039,7 @@ class JobRunner:
         """Answer to a duplicate warning: copy into the next pending folder."""
         if self.state is not RunnerState.DUPLICATE_WARNING:
             return
-        target = self.job.next_pending()
+        target = self._take_target()
         if target is None:
             self._set_state(RunnerState.NO_TARGET, "Nenhuma pasta pendente")
             self.emit(NoTarget(self.current_media))
@@ -1464,3 +1557,162 @@ def _to_entry_result(result, duration: float) -> EntryResult:
         partial=getattr(result, "partial", False),
     )
     return entry_result
+
+
+# --------------------------------------------------------------------------
+# Several drives at once
+# --------------------------------------------------------------------------
+
+
+class DrivePool:
+    """One JobRunner per optical drive, over one job.
+
+    Two drives roughly double throughput on this workload, because the
+    bottleneck is the drive's read head and not the share it writes to: an
+    optical drive manages single-digit MB/s, and less on a disc that has been
+    sitting in a box for fifteen years, while the destination is a LAN share
+    an order of magnitude faster than that.
+
+    Nothing here is threaded. The runners are stepped from the same ``poll``
+    and ``tick`` the single-drive app already used, which run on the UI's
+    pump; only the copies themselves are on worker threads, exactly as
+    before. That is what keeps the job model free of locks - two runners can
+    never be inside it at the same moment.
+
+    The one thing they genuinely share is *which folder is whose*, and that
+    lives in the ClaimRegistry every runner is handed.
+    """
+
+    def __init__(
+        self,
+        store: JobStore,
+        scanner,
+        drives: "list[str] | None" = None,
+        **runner_kwargs,
+    ) -> None:
+        self.store = store
+        self.scanner = scanner
+        self.claims = ClaimRegistry()
+        found = drives if drives is not None else _scanner_drives(scanner)
+        # Sorted, so "the first drive" means the same thing every session and
+        # the panels do not reshuffle between runs.
+        self.drives: list[str] = sorted({d.upper() for d in found})
+        self.runners: dict[str, JobRunner] = {
+            drive: JobRunner(
+                store=store,
+                scanner=scanner,
+                drive=drive,
+                claims=self.claims,
+                **runner_kwargs,
+            )
+            for drive in self.drives
+        }
+
+    # -- plumbing ---------------------------------------------------------
+
+    @property
+    def job(self):
+        return self.store.job
+
+    def runner_for(self, drive: str) -> "JobRunner | None":
+        return self.runners.get(drive.upper())
+
+    def start(self) -> None:
+        for runner in self.runners.values():
+            runner.start()
+
+    def poll(self) -> None:
+        for runner in self.runners.values():
+            runner.poll()
+
+    def tick(self) -> None:
+        for runner in self.runners.values():
+            runner.tick()
+
+    def drain(self) -> list[Event]:
+        """Every drive's events, already stamped with which drive they are from."""
+        collected: list[Event] = []
+        for runner in self.runners.values():
+            collected.extend(runner.drain())
+        return collected
+
+    # -- aggregate state --------------------------------------------------
+
+    @property
+    def is_busy(self) -> bool:
+        """True while *any* drive is copying - the question every caller that
+        asks is really asking ("is it safe to close / clean up now?")."""
+        return any(runner.is_busy for runner in self.runners.values())
+
+    @property
+    def is_paused(self) -> bool:
+        return any(runner.is_paused for runner in self.runners.values())
+
+    def busy_drives(self) -> list[str]:
+        return [drive for drive, r in self.runners.items() if r.is_busy]
+
+    def working_entry_ids(self) -> set[str]:
+        """Folders being written right now, which the list must not let the
+        user rename or delete out from under a copy."""
+        return {
+            r.current_entry_id
+            for r in self.runners.values()
+            if r.is_busy and r.current_entry_id
+        }
+
+    def claimed_by(self) -> dict[str, str]:
+        """entry_id -> drive, so the folder list can show whose is whose."""
+        return self.claims.as_dict()
+
+    def cancel_all(self) -> None:
+        for runner in self.runners.values():
+            if runner.is_busy:
+                runner.cancel()
+
+    # -- the advisory bit -------------------------------------------------
+
+    def expected(self) -> dict[str, "DiscEntry | None"]:
+        """What each idle drive should be fed next.
+
+        Advisory only, and deliberately so. Nothing is reserved by asking, and
+        a disc put in the "wrong" drive still lands in the right folder -
+        identification happens after insertion either way. This exists so the
+        operator can keep two drives straight, not to make a rule they can
+        break.
+
+        Drives already holding a folder report that one; the rest are dealt
+        the queue in drive order.
+        """
+        answer: dict[str, DiscEntry | None] = {}
+        spoken_for = set()
+        for drive in self.drives:
+            runner = self.runners[drive]
+            entry = runner._current_entry()
+            answer[drive] = entry
+            if entry is not None:
+                spoken_for.add(entry.entry_id)
+
+        free = [drive for drive in self.drives if answer[drive] is None]
+        if not free:
+            return answer
+        queue_ahead = [
+            entry
+            for entry in self.job.upcoming_pending(len(free) + len(spoken_for))
+            if entry.entry_id not in spoken_for
+        ]
+        for drive, entry in zip(free, queue_ahead):
+            answer[drive] = entry
+        return answer
+
+
+def _scanner_drives(scanner) -> list[str]:
+    """Ask the scanner which drives exist, tolerating one that cannot say.
+
+    A scanner predating the pool has only ``scan()``, which reports drives
+    with a disc already in them - enough to keep working, and the pool picks
+    up the rest as soon as they are used.
+    """
+    asker = getattr(scanner, "drives", None)
+    if callable(asker):
+        return list(asker())
+    return sorted({media.drive for media in scanner.scan()})

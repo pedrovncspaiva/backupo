@@ -17,12 +17,14 @@ from ..strings import kind_label, status_label
 from . import theme
 from .widgets import CellEditor, autohide, format_bytes, format_stamp
 
-COLUMNS = ("index", "group", "folder", "status", "kind", "label", "files", "size", "finished")
+COLUMNS = ("index", "group", "folder", "status", "drive", "kind", "label", "files",
+           "size", "finished")
 HEADINGS = {
     "index": "#",
     "group": "Subpasta (EG)",
     "folder": "Pasta",
     "status": "Situacao",
+    "drive": "Un.",
     "kind": "Tipo",
     "label": "Rotulo",
     "files": "Arquivos",
@@ -34,18 +36,31 @@ HEADINGS = {
 # a column dragged wider, not as a permanent fixture under a half-empty table.
 WIDTHS = {
     "index": 38,
-    "group": 110,
-    "folder": 186,
+    "group": 104,
+    "folder": 162,
     # Wide enough for the longest thing _situation() builds, which is
     # "falhou (defeito)" behind its dot - the one row where a clipped word
     # loses the reason.
     "status": 124,
+    # Empty on every row until a second drive exists, which is the
+    # only time whose-is-whose is a question worth a column.
+    "drive": 48,
     "kind": 54,
-    "label": 94,
+    "label": 84,
     "files": 78,     # its own heading is the widest thing in it
     "size": 76,
-    "finished": 88,
+    "finished": 84,
 }
+
+# What the text columns shrink to when the drive column is showing and the
+# pane has given width to a second disc panel.
+NARROW_WIDTHS = dict(
+    WIDTHS,
+    group=98,
+    folder=122,
+    label=76,
+    size=70,
+)
 
 COLLECT_ON_LABEL = "Acumular discos nesta pasta"
 COLLECT_OFF_LABEL = "Parar de acumular nesta pasta"
@@ -67,6 +82,7 @@ MIN_WIDTHS = {
     "group": 90,
     "folder": 140,
     "status": 100,
+    "drive": 44,
     "kind": 46,
     "label": 70,
     "files": 54,
@@ -99,7 +115,10 @@ class EntriesView(ttk.Frame):
         self.on_rename = on_rename
         self.on_command = on_command
         self._editor: CellEditor | None = None
-        self._protected: str | None = None
+        # Folders being written right now - one per busy drive.
+        self._protected: set[str] = set()
+        # entry_id -> drive, so a row can say which drive has it.
+        self._claimed: dict[str, str] = {}
         # Which rows are collecting, so the context menu can offer the right
         # half of the toggle without needing the job handed to it again.
         self._collecting: set[str] = set()
@@ -124,7 +143,7 @@ class EntriesView(ttk.Frame):
         self.tree = ttk.Treeview(self, columns=COLUMNS, show="headings", selectmode="browse")
         for name in COLUMNS:
             self.tree.heading(name, text=HEADINGS[name])
-            anchor = "center" if name in ("index", "kind") else "w"
+            anchor = "center" if name in ("index", "kind", "drive") else "w"
             if name in ("files", "size"):
                 anchor = "e"
             self.tree.column(
@@ -139,6 +158,7 @@ class EntriesView(ttk.Frame):
                 stretch=False,
             )
         self.tree.grid(row=1, column=0, sticky="nsew")
+        self.show_drive_column(False)
 
         # Both scrollbars come and go with the need for them, the same way the
         # disc panel's does. The columns now add up to less than the pane gets
@@ -209,6 +229,21 @@ class EntriesView(ttk.Frame):
                     label=label, command=lambda c=command: self._emit(c)
                 )
 
+    def show_drive_column(self, shown: bool) -> None:
+        """Reveal "Unidade" only when there is more than one of them.
+
+        With a single drive every cell in it holds the same letter, which is
+        a column of noise. Showing it also costs width twice over - the
+        column itself, and the wider drives pane two panels need - so the
+        text columns give some back rather than letting a heading clip.
+        """
+        self.tree.configure(
+            displaycolumns=COLUMNS if shown
+            else tuple(c for c in COLUMNS if c != "drive")
+        )
+        for name, width in (NARROW_WIDTHS if shown else WIDTHS).items():
+            self.tree.column(name, width=width)
+
     # -- selection --------------------------------------------------------
 
     @property
@@ -248,7 +283,7 @@ class EntriesView(ttk.Frame):
         """Empty the table with no job to show - closing one, with no other
         open yet to refresh() against."""
         self.tree.delete(*self.tree.get_children())
-        self._protected = None
+        self._protected = set()
         self._collecting = set()
         self._show_empty(True)
 
@@ -258,9 +293,20 @@ class EntriesView(ttk.Frame):
         else:
             self.empty_label.place_forget()
 
-    def refresh(self, job: Job, working_entry_id: str | None = None) -> None:
+    def refresh(
+        self,
+        job: Job,
+        working_entry_id: str | None = None,
+        working_entry_ids: set[str] | None = None,
+        claimed_by: dict[str, str] | None = None,
+    ) -> None:
         """Redraw from the job. Cheap enough for the list sizes involved."""
-        self._protected = working_entry_id
+        # Either form: one id from the single-drive caller, or the set a
+        # pool of drives produces.
+        self._protected = set(working_entry_ids or ())
+        if working_entry_id:
+            self._protected.add(working_entry_id)
+        self._claimed = dict(claimed_by or {})
         previous = self.selected
         scroll = self.tree.yview()
 
@@ -298,6 +344,7 @@ class EntriesView(ttk.Frame):
                     entry.group if entry.group != previous_group else "",
                     entry.folder_name,
                     self._situation(entry),
+                    self._claimed.get(entry.entry_id, ""),
                     kind_label(entry.disc_kind),
                     entry.media.label if entry.media else "",
                     files,
@@ -363,7 +410,7 @@ class EntriesView(ttk.Frame):
         Scrolled into view first: the editor is placed over the cell's bbox,
         and a row that is off screen has no bbox to place it on.
         """
-        if not self.tree.exists(entry_id) or entry_id == self._protected:
+        if not self.tree.exists(entry_id) or entry_id in self._protected:
             return
         self.tree.selection_set(entry_id)
         self.tree.see(entry_id)
@@ -376,7 +423,7 @@ class EntriesView(ttk.Frame):
         column = self.tree.identify_column(event.x)
         if not item or column != f"#{COLUMNS.index('folder') + 1}":
             return None
-        if item == self._protected:
+        if item in self._protected:
             return "break"  # never rename the folder being written right now
 
         current = self.tree.set(item, "folder")

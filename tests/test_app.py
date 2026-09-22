@@ -25,6 +25,9 @@ class AppCase(unittest.TestCase):
             self.app = BackupApp()
         except tk.TclError as exc:
             self.skipTest(f"no display available for Tk: {exc}")
+        # Pin the hardware: otherwise these build a different window on a
+        # laptop with no optical drive than on the machine with two.
+        self.app.make_scanner = lambda: FakeScanner([], drives=("D:",))
         self.app.withdraw()
         self.addCleanup(self.app.destroy)
 
@@ -99,8 +102,10 @@ class CloseJobTests(AppCase):
     def test_it_asks_before_closing_a_job_that_is_copying(self) -> None:
         store = self.build()
         self.app._attach(store)
-        self.app.runner = JobRunner(store=store, scanner=FakeScanner([]))
-        self.app.runner._set_state(RunnerState.WORKING, "Copiando")
+        # Drive the real pool into a copy rather than swapping the runner
+        # out: self.app.runner is now derived from the pool, so assigning to
+        # it would only be testing the test.
+        self.app.pool.runners["D:"]._set_state(RunnerState.WORKING, "Copiando")
 
         with mock.patch("backupov2.ui.app.messagebox.askyesno", return_value=False) as asked:
             self.app._close_job()
@@ -111,8 +116,10 @@ class CloseJobTests(AppCase):
     def test_confirming_while_copying_cancels_and_closes(self) -> None:
         store = self.build()
         self.app._attach(store)
-        self.app.runner = JobRunner(store=store, scanner=FakeScanner([]))
-        self.app.runner._set_state(RunnerState.WORKING, "Copiando")
+        # Drive the real pool into a copy rather than swapping the runner
+        # out: self.app.runner is now derived from the pool, so assigning to
+        # it would only be testing the test.
+        self.app.pool.runners["D:"]._set_state(RunnerState.WORKING, "Copiando")
 
         with mock.patch("backupov2.ui.app.messagebox.askyesno", return_value=True):
             self.app._close_job()
