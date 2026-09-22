@@ -1062,7 +1062,7 @@ class CorruptDiscTests(RunnerCase):
 
         report = self.report_for()
         self.assertTrue(report.is_file())
-        text = report.read_text(encoding="utf-8")
+        text = report.read_text(encoding="utf-8-sig")
         self.assertIn("DISCO COM DEFEITO", text)
         self.assertIn("INCOMPLETO", text)
         self.assertIn("ruim1.bin", text)
@@ -1121,7 +1121,7 @@ class CorruptDiscTests(RunnerCase):
         self.clock.advance(ABANDON_SECONDS + 1)
         self.runner.tick()
 
-        text = self.report_for().read_text(encoding="utf-8")
+        text = self.report_for().read_text(encoding="utf-8-sig")
         self.assertIn("parou de responder", text)
 
     def test_a_late_answer_from_an_abandoned_worker_is_ignored(self) -> None:
@@ -1167,10 +1167,10 @@ class MarkEntryDefectiveTests(RunnerCase):
         self.build(script=[[]])
         self.runner.mark_entry_defective(self.store.job.entries[0].entry_id)
 
-        text = self.report_for().read_text(encoding="utf-8")
+        text = self.report_for().read_text(encoding="utf-8-sig")
         self.assertIn("PULADA", text)
         self.assertIn("NENHUM ARQUIVO FOI COPIADO", text)
-        self.assertIn("nao chegou a ser lido", text)
+        self.assertIn("não chegou a ser lido", text)
 
     def test_the_note_reaches_both_the_report_and_the_job(self) -> None:
         self.build(script=[[]])
@@ -1179,7 +1179,7 @@ class MarkEntryDefectiveTests(RunnerCase):
         self.runner.mark_entry_defective(entry.entry_id, "disco trincado ao meio")
 
         self.assertEqual(entry.notes, "disco trincado ao meio")
-        self.assertIn("disco trincado ao meio", self.report_for().read_text("utf-8"))
+        self.assertIn("disco trincado ao meio", self.report_for().read_text("utf-8-sig"))
 
     def test_it_creates_the_folder_when_none_exists_yet(self) -> None:
         """A folder is only made when a disc arrives, and this disc never will."""
@@ -1211,7 +1211,7 @@ class MarkEntryDefectiveTests(RunnerCase):
         self.assertFalse(self.report_for().exists())
 
     def test_it_keeps_whatever_a_previous_attempt_had_copied(self) -> None:
-        """A part-copied folder written off later still says how much is there."""
+        """A folder written off later still says how much of it is there."""
         self.build(script=[[disc()], [disc()]])
         self.settle()
         self.run_countdown()
@@ -1220,9 +1220,24 @@ class MarkEntryDefectiveTests(RunnerCase):
 
         self.runner.mark_entry_defective(entry.entry_id, "resto do disco ilegivel")
 
-        text = self.report_for().read_text(encoding="utf-8")
-        self.assertIn("INCOMPLETO", text)
-        self.assertIn("Arquivos copiados com sucesso: 3", text)
+        text = self.report_for().read_text(encoding="utf-8-sig")
+        self.assertIn("Arquivos copiados...........: 3", text)
+        self.assertIn("Conteúdo recuperado", text)
+
+    def test_a_copy_that_did_finish_is_not_called_incomplete(self) -> None:
+        """This fixture copies the whole disc before the folder is written
+        off, so claiming "INCOMPLETO" next to "100%" would be the report
+        contradicting itself on a page that goes out with the delivery."""
+        self.build(script=[[disc()], [disc()]])
+        self.settle()
+        self.run_countdown()
+        entry = self.store.job.entries[0]
+
+        self.runner.mark_entry_defective(entry.entry_id)
+
+        text = self.report_for().read_text(encoding="utf-8-sig")
+        self.assertIn("100%", text)
+        self.assertNotIn("INCOMPLETO", text)
 
     def test_an_unknown_entry_is_a_no_op(self) -> None:
         self.build(script=[[]])

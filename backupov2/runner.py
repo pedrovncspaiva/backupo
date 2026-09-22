@@ -1032,7 +1032,7 @@ class JobRunner:
         try:
             report = write_defect_report(
                 folder=folder,
-                disc_name=entry.media.display_name if entry.media else "(nao lido)",
+                disc_name=entry.media.display_name if entry.media else "(não lido)",
                 reason="marcado manualmente como disco defeituoso",
                 files_copied=copied,
                 failed_files=failed,
@@ -1040,6 +1040,12 @@ class JobRunner:
                 serial=entry.media.serial if entry.media else None,
                 note=note,
                 skipped=True,
+                bytes_copied=entry.result.bytes_copied if entry.result else 0,
+                # Only set if this disc was read on an earlier attempt; a
+                # folder written off sight-unseen has no totals at all, and
+                # the report says so rather than printing a measured-looking 0%.
+                total_bytes=entry.media.total_bytes if entry.media else 0,
+                total_files=entry.media.file_count if entry.media else 0,
             )
             self.log(f"Relatorio do defeito gravado em '{report.name}'.")
         except OSError as exc:
@@ -1336,10 +1342,13 @@ class JobRunner:
         failed = list(getattr(result, "failed_files", None) or [])
         if result is not None:
             copied = result.files_copied
-            reason = f"{len(failed)} arquivo(s) nao puderam ser lidos"
+            copied_bytes = result.bytes_copied
+            reason = f"{len(failed)} arquivo(s) não puderam ser lidos"
         else:
+            # The drive never answered, so the last heartbeat is all there is.
             copied = self._last_progress.files_copied if self._last_progress else 0
-            reason = "a unidade parou de responder durante a copia"
+            copied_bytes = self._last_progress.copied_bytes if self._last_progress else 0
+            reason = "a unidade parou de responder durante a cópia"
 
         entry.status = EntryStatus.FAILED
         entry.disc_kind = work.kind
@@ -1369,6 +1378,11 @@ class JobRunner:
                 failed_files=failed,
                 when=utc_now().replace("T", " ").rstrip("Z"),
                 serial=work.media.serial,
+                bytes_copied=copied_bytes,
+                # The scan ran before the copy, so the disc's real size is
+                # known even when the drive died mid-transfer.
+                total_bytes=work.scan.total_bytes if work.scan else 0,
+                total_files=work.scan.file_count if work.scan else 0,
             )
             self.log(f"Relatorio do defeito gravado em '{report.name}'.")
         except OSError as exc:

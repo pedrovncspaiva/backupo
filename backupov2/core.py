@@ -565,6 +565,46 @@ def format_bytes(size: float) -> str:
 DEFECT_REPORT_NAME = "_DISCO_COM_DEFEITO.txt"
 
 
+REPORT_WIDTH = 60
+_FIELD_WIDTH = 28
+
+
+def _field(label: str, value: str) -> str:
+    """One aligned ``Rotulo....: valor`` line.
+
+    Built rather than written out so the dotted leaders cannot drift: the two
+    file-count lines used to be one character longer than every other line,
+    which in Notepad is exactly visible enough to look like a mistake.
+    """
+    return f"{label}{'.' * max(1, _FIELD_WIDTH - len(label))}: {value}"
+
+
+def _recovered(bytes_copied: int, total_bytes: int, files_copied: int,
+               total_files: int) -> str:
+    """How much of the disc actually made it, as a percentage.
+
+    Bytes when the disc was measured, files when it was not - a count of
+    files is a poorer proxy for "how much of it is here" (one video file can
+    outweigh a thousand small ones), but it beats saying nothing.
+
+    A disc written off without ever being read has no total to divide by, and
+    reports that honestly instead of showing 0% as though that were measured.
+    """
+    if total_bytes > 0:
+        percent = min(100.0, bytes_copied / total_bytes * 100)
+        # Decimal comma, to match every size the app shows on screen.
+        return (
+            f"{percent:.0f}%  ({format_bytes(bytes_copied).replace('.', ',')} "
+            f"de {format_bytes(total_bytes).replace('.', ',')})"
+        )
+    if total_files > 0:
+        percent = min(100.0, files_copied / total_files * 100)
+        return f"{percent:.0f}%  ({files_copied} de {total_files} arquivos)"
+    if files_copied:
+        return f"não foi possível medir ({files_copied} arquivos copiados)"
+    return "0%  (nenhum arquivo foi copiado)"
+
+
 def write_defect_report(
     folder: Path,
     disc_name: str,
@@ -575,6 +615,9 @@ def write_defect_report(
     serial: int | None = None,
     note: str = "",
     skipped: bool = False,
+    bytes_copied: int = 0,
+    total_bytes: int = 0,
+    total_files: int = 0,
 ) -> Path:
     """Leave a note in the folder saying this disc could not be read fully.
 
@@ -589,41 +632,54 @@ def write_defect_report(
     "some of it is here" and the other means "none of it is".
     """
     folder.mkdir(parents=True, exist_ok=True)
+    # Measured, not assumed. A folder marked defective after a copy that did
+    # finish would otherwise be handed over claiming to be incomplete on the
+    # same page as "100% recuperado".
+    whole_disc = total_bytes > 0 and bytes_copied >= total_bytes
     if skipped:
+        if not files_copied:
+            second = "NENHUM ARQUIVO FOI COPIADO DESTE DISCO."
+        elif whole_disc:
+            second = "O que foi copiado antes da marcação parece estar completo."
+        else:
+            second = "O CONTEÚDO DESTA PASTA ESTÁ INCOMPLETO."
         headline = [
-            "Esta pasta foi marcada como PULADA porque o disco esta defeituoso.",
-            "O CONTEUDO DESTA PASTA ESTA INCOMPLETO."
-            if files_copied
-            else "NENHUM ARQUIVO FOI COPIADO DESTE DISCO.",
+            "Esta pasta foi marcada como PULADA porque o disco está defeituoso.",
+            second,
         ]
     else:
         headline = [
-            "Este disco foi marcado como defeituoso durante a copia.",
-            "O CONTEUDO DESTA PASTA ESTA INCOMPLETO.",
+            "Este disco foi marcado como defeituoso durante a cópia.",
+            "O CONTEÚDO DESTA PASTA ESTÁ INCOMPLETO.",
         ]
 
-    lines = ["DISCO COM DEFEITO", "=" * 60, "", *headline, ""]
-    lines.append(f"Disco.......................: {disc_name}")
+    lines = ["DISCO COM DEFEITO", "=" * REPORT_WIDTH, "", *headline, ""]
+    lines.append(_field("Disco", disc_name))
     if serial:
-        lines.append(f"Numero de serie.............: 0x{serial:08X}")
+        lines.append(_field("Número de série", f"0x{serial:08X}"))
     lines += [
-        f"Marcado em..................: {when}",
-        f"Motivo......................: {reason}",
+        _field("Marcado em", when),
+        _field("Motivo", reason),
     ]
     if note.strip():
         observation = note.strip().splitlines()
-        lines.append(f"Observacao..................: {observation[0]}")
+        lines.append(_field("Observação", observation[0]))
         # Keep any further lines aligned under the first, so a long note
         # stays readable in Notepad.
-        lines += [f"{' ' * 30}{extra}" for extra in observation[1:]]
+        lines += [f"{' ' * (_FIELD_WIDTH + 2)}{extra}" for extra in observation[1:]]
     lines += [
         "",
-        f"Arquivos copiados com sucesso: {files_copied}",
-        f"Arquivos que falharam........: {len(failed_files)}",
+        _field("Arquivos copiados", str(files_copied)),
+        # Deliberately not a count of files that failed. A disc the drive
+        # gives up on never reports individual failures, so that number was
+        # always 0 sitting under "INCOMPLETO" - which read as "nothing went
+        # wrong". How much of the disc came back is the honest measure.
+        _field("Conteúdo recuperado",
+               _recovered(bytes_copied, total_bytes, files_copied, total_files)),
     ]
 
     if failed_files:
-        lines += ["", "ARQUIVOS QUE NAO PUDERAM SER LIDOS", "-" * 60]
+        lines += ["", "ARQUIVOS QUE NÃO PUDERAM SER LIDOS", "-" * REPORT_WIDTH]
         for failure in failed_files:
             if isinstance(failure, dict):
                 path, error = failure.get("path", "?"), failure.get("error", "")
@@ -633,7 +689,7 @@ def write_defect_report(
             if error:
                 lines.append(f"    {error}")
     elif skipped:
-        lines += ["", "O disco nao chegou a ser lido, entao nao ha lista de arquivos."]
+        lines += ["", "O disco não chegou a ser lido, então não há lista de arquivos."]
     else:
         lines += [
             "",
@@ -643,13 +699,15 @@ def write_defect_report(
 
     lines += [
         "",
-        "-" * 60,
-        "Gerado pelo backupov2. Este arquivo descreve os dados, nao a",
-        "ferramenta, e por isso nao e removido por 'Limpar arquivos de",
-        "controle'. Apague-o quando o disco for recuperado ou substituido.",
+        "-" * REPORT_WIDTH,
+        "Arquivo gerado automaticamente pelo backupov2.",
         "",
     ]
 
     report = folder / DEFECT_REPORT_NAME
-    report.write_text("\n".join(lines), encoding="utf-8")
+    # utf-8-sig, not plain utf-8: this file now carries accents and gets
+    # opened by double-click on whatever machine the delivery lands on. The
+    # BOM is what stops a tool that still defaults to ANSI turning "cópia"
+    # into "cÃ³pia" in a document that goes out with the discs.
+    report.write_text("\n".join(lines), encoding="utf-8-sig")
     return report

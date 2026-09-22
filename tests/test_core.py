@@ -730,7 +730,7 @@ class DefectReportTests(unittest.TestCase):
             serial=0x499602D2,
         )
 
-        text = report.read_text(encoding="utf-8")
+        text = report.read_text(encoding="utf-8-sig")
         self.assertEqual(report.name, DEFECT_REPORT_NAME)
         self.assertIn("PROJ2019_07 (D:)", text)
         self.assertIn("0x499602D2", text)
@@ -764,7 +764,7 @@ class DefectReportTests(unittest.TestCase):
             when="2026-09-17 14:32:05",
         )
 
-        text = report.read_text(encoding="utf-8")
+        text = report.read_text(encoding="utf-8-sig")
         self.assertIn("parou de responder", text)
         self.assertNotIn("ARQUIVOS QUE NAO PUDERAM SER LIDOS", text)
 
@@ -780,7 +780,7 @@ class DefectReportTests(unittest.TestCase):
             when="2026-09-17 14:32:05",
         )
 
-        self.assertIn("DADOS/x.bin", report.read_text(encoding="utf-8"))
+        self.assertIn("DADOS/x.bin", report.read_text(encoding="utf-8-sig"))
 
 
 class SkippedDefectReportTests(unittest.TestCase):
@@ -807,7 +807,7 @@ class SkippedDefectReportTests(unittest.TestCase):
             skipped=True,
         )
         arguments.update(overrides)
-        return write_defect_report(**arguments).read_text(encoding="utf-8")
+        return write_defect_report(**arguments).read_text(encoding="utf-8-sig")
 
     def test_it_says_the_folder_was_skipped_and_nothing_copied(self) -> None:
         text = self.write()
@@ -822,7 +822,7 @@ class SkippedDefectReportTests(unittest.TestCase):
 
     def test_the_note_is_included(self) -> None:
         text = self.write(note="disco trincado ao meio")
-        self.assertIn("Observacao", text)
+        self.assertIn("Observação", text)
         self.assertIn("disco trincado ao meio", text)
 
     def test_a_multi_line_note_stays_aligned(self) -> None:
@@ -835,5 +835,55 @@ class SkippedDefectReportTests(unittest.TestCase):
 
     def test_the_mid_copy_wording_is_untouched(self) -> None:
         text = self.write(skipped=False, files_copied=5)
-        self.assertIn("durante a copia", text)
+        self.assertIn("durante a cópia", text)
         self.assertNotIn("PULADA", text)
+
+    # -- how much of the disc came back -----------------------------------
+
+    def test_it_reports_the_share_of_the_disc_recovered(self) -> None:
+        text = self.write(files_copied=30, bytes_copied=1_500_000,
+                          total_bytes=2_000_000)
+        self.assertIn("Conteúdo recuperado", text)
+        self.assertIn("75%", text)
+
+    def test_it_falls_back_to_counting_files_when_bytes_are_unknown(self) -> None:
+        """An audio disc is ripped track by track, so there are no byte
+        totals to divide - a count of tracks still answers the question."""
+        text = self.write(files_copied=3, total_files=12)
+        self.assertIn("25%", text)
+
+    def test_a_disc_never_read_does_not_claim_a_measured_zero(self) -> None:
+        """Nothing was measured, so "0%" has to come with the reason rather
+        than looking like a reading taken off the disc."""
+        text = self.write(files_copied=0)
+        self.assertIn("nenhum arquivo foi copiado", text)
+
+    def test_it_never_reports_more_than_all_of_it(self) -> None:
+        """copy_tree can write more bytes than the scan predicted when a file
+        grows underneath it; 103% would just look broken."""
+        text = self.write(files_copied=9, bytes_copied=2_100_000,
+                          total_bytes=2_000_000)
+        self.assertIn("100%", text)
+
+    def test_it_does_not_report_a_count_of_failed_files(self) -> None:
+        """A drive that gives up never attributes the loss to individual
+        files, so that count was always 0 - printed directly under
+        "INCOMPLETO", where it read as "nothing actually went wrong"."""
+        text = self.write(files_copied=30, bytes_copied=1, total_bytes=2)
+        self.assertNotIn("falharam", text)
+
+    def test_the_footer_only_names_the_tool(self) -> None:
+        text = self.write()
+        self.assertIn("gerado automaticamente pelo backupov2", text)
+        self.assertNotIn("Limpar arquivos", text)
+
+    def test_every_field_lines_up(self) -> None:
+        """The two file-count lines used to be a character wider than the
+        rest, which in Notepad is just visible enough to look like a fault."""
+        text = self.write(files_copied=7, serial=0x499602D2,
+                          note="disco riscado", total_files=10)
+        columns = {
+            line.index(": ") for line in text.splitlines()
+            if ".: " in line
+        }
+        self.assertEqual(len(columns), 1, columns)
