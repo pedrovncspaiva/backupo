@@ -11,6 +11,7 @@ from ..jobmodel import EntryDraft, Job
 from ..reconcile import Finding, ReconcileReport, Resolution
 from ..strings import status_label
 from . import theme
+from .widgets import autohide, format_stamp
 
 RESOLUTION_LABELS = {
     Resolution.RESUME_INTO: "Retomar (manter o que ja existe)",
@@ -190,16 +191,20 @@ class SendToDialog(_Dialog):
         self.tree.heading("when", text="Concluido")
         self.tree.column("#0", width=0, stretch=False)  # unused tree-icon column
         self.tree.column("index", width=40, minwidth=34, anchor="center", stretch=False)
-        self.tree.column("folder", width=280, minwidth=140, stretch=False)
+        # The four of them add up to less than the dialog's inner width, so
+        # the horizontal bar stays out of the way until the window is dragged
+        # narrower than the folder names need.
+        self.tree.column("folder", width=266, minwidth=140, stretch=False)
         self.tree.column("status", width=90, minwidth=70, stretch=False)
-        self.tree.column("when", width=110, minwidth=80, stretch=False)
+        self.tree.column("when", width=100, minwidth=80, stretch=False)
         self.tree.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
 
         vertical = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        vertical.grid(row=1, column=1, sticky="ns", pady=(10, 0))
         horizontal = ttk.Scrollbar(frame, orient="horizontal", command=self.tree.xview)
-        horizontal.grid(row=2, column=0, sticky="ew")
-        self.tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        self.tree.configure(
+            yscrollcommand=autohide(vertical, row=1, column=1, sticky="ns", pady=(10, 0)),
+            xscrollcommand=autohide(horizontal, row=2, column=0, sticky="ew"),
+        )
 
         self.tree.tag_configure(
             "heading", font=theme.FONT_SMALL_BOLD, foreground=theme.INK_SOFT
@@ -269,7 +274,7 @@ class SendToDialog(_Dialog):
             self.tree.see(first_selectable)
 
     def _insert_row(self, iid: str, index: int, entry, tag: str | None = None) -> None:
-        when = (entry.finished_utc or "").replace("T", " ")[11:16]
+        when = format_stamp(entry.finished_utc, "%H:%M")
         self.tree.insert(
             "",
             "end",
@@ -331,22 +336,31 @@ class ReconcileDialog(_Dialog):
         )
         if applied:
             summary += f"  {len(applied)} ajuste(s) automatico(s) ja aplicado(s)."
-        ttk.Label(outer, text=summary, font=("Segoe UI", 10, "bold")).grid(
+        ttk.Label(outer, text=summary, font=theme.FONT_BODY_BOLD).grid(
             row=0, column=0, sticky="w"
         )
 
-        canvas = tk.Canvas(outer, highlightthickness=0)
+        # An unstyled tk.Canvas comes up in Tk's own grey, which against the
+        # dialog's background read as a grey slab with the findings sitting on
+        # a lighter rectangle that stopped halfway across it.
+        canvas = tk.Canvas(outer, highlightthickness=0, background=theme.CANVAS)
         canvas.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         scroll.grid(row=1, column=1, sticky="ns", pady=(10, 0))
-        canvas.configure(yscrollcommand=scroll.set)
+        canvas.configure(
+            yscrollcommand=autohide(scroll, row=1, column=1, sticky="ns", pady=(10, 0))
+        )
 
         body = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=body, anchor="nw")
+        window = canvas.create_window((0, 0), window=body, anchor="nw")
         body.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
+        # Without this the body keeps its requested width, so a long finding
+        # wraps at 560px inside a frame that is only as wide as the shortest
+        # one - which is where that half-width edge came from.
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
 
         row = 0
         for finding in report.findings:

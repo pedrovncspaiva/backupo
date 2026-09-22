@@ -15,7 +15,7 @@ from ..core import validate_folder_name
 from ..jobmodel import EntryStatus, Job
 from ..strings import kind_label, status_label
 from . import theme
-from .widgets import CellEditor, format_bytes
+from .widgets import CellEditor, autohide, format_bytes, format_stamp
 
 COLUMNS = ("index", "group", "folder", "status", "kind", "label", "files", "size", "finished")
 HEADINGS = {
@@ -24,30 +24,39 @@ HEADINGS = {
     "folder": "Pasta",
     "status": "Situacao",
     "kind": "Tipo",
-    "label": "Rotulo do disco",
+    "label": "Rotulo",
     "files": "Arquivos",
     "size": "Tamanho",
     "finished": "Concluido",
 }
+# Sized so the nine of them add up to less than the pane gets on a default
+# 1280-wide window: the horizontal scrollbar is there for a narrowed window or
+# a column dragged wider, not as a permanent fixture under a half-empty table.
 WIDTHS = {
-    "index": 44,
-    "group": 130,
-    "folder": 240,
-    "status": 118,
-    "kind": 56,
-    "label": 110,
-    "files": 70,
-    "size": 80,
-    "finished": 118,
+    "index": 38,
+    "group": 110,
+    "folder": 186,
+    # Wide enough for the longest thing _situation() builds, which is
+    # "falhou (defeito)" behind its dot - the one row where a clipped word
+    # loses the reason.
+    "status": 124,
+    "kind": 54,
+    "label": 94,
+    "files": 78,     # its own heading is the widest thing in it
+    "size": 76,
+    "finished": 88,
 }
 
 COLLECT_ON_LABEL = "Acumular discos nesta pasta"
 COLLECT_OFF_LABEL = "Parar de acumular nesta pasta"
 
+# Names the buttons, without trying to redraw their icons in text: the
+# toolbar's marks are images now, and the Unicode stand-ins that used to sit
+# here rendered as a different shape from the button they were pointing at.
 EMPTY_MESSAGE = (
     "Nenhuma pasta na fila ainda.\n\n"
-    "Use  ＋ Adicionar pastas...  para colar a lista,\n"
-    "ou  \U0001f4f7 Importar de fotos...  para ler o protocolo de entrega."
+    'Use "Adicionar pastas..." para colar a lista,\n'
+    'ou "Importar de fotos..." para ler o protocolo de entrega.'
 )
 
 # Floors, so dragging one column wider squeezes its neighbours only so far and
@@ -62,7 +71,8 @@ MIN_WIDTHS = {
     "label": 70,
     "files": 54,
     "size": 62,
-    "finished": 96,
+    # "21/09 15:57", not the full ISO stamp it used to hold.
+    "finished": 80,
 }
 
 # A dot in front of the word, so a row's situation survives a screenshot, a
@@ -130,14 +140,16 @@ class EntriesView(ttk.Frame):
             )
         self.tree.grid(row=1, column=0, sticky="nsew")
 
-        vertical = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        vertical.grid(row=1, column=1, sticky="ns")
-        # The columns are wider than the pane, so without this the table simply
-        # squeezes and a widened column has nowhere to go.
-        horizontal = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
-        horizontal.grid(row=2, column=0, sticky="ew")
+        # Both scrollbars come and go with the need for them, the same way the
+        # disc panel's does. The columns now add up to less than the pane gets
+        # on a default window, so a permanently gridded horizontal bar was an
+        # empty trough under a half-empty table saying "there is more here" -
+        # and the vertical one said the same under five rows.
+        self._vertical = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        self._horizontal = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
         self.tree.configure(
-            yscrollcommand=vertical.set, xscrollcommand=horizontal.set
+            yscrollcommand=autohide(self._vertical, row=1, column=1, sticky="ns"),
+            xscrollcommand=autohide(self._horizontal, row=2, column=0, sticky="ew"),
         )
 
         # An empty table that says nothing looks broken. This says what to do
@@ -273,7 +285,7 @@ class EntriesView(ttk.Frame):
                 if result.files_failed:
                     files += f" (!{result.files_failed})"
             size = format_bytes(result.bytes_copied) if result and result.bytes_copied else ""
-            finished = (entry.finished_utc or "").replace("T", " ").rstrip("Z")
+            finished = format_stamp(entry.finished_utc)
 
             self.tree.insert(
                 "",

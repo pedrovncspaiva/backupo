@@ -10,13 +10,24 @@ in a text field.
 import tempfile
 import tkinter as tk
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from tkinter import ttk
 
 from backupov2.jobmodel import EntryDraft, JobSettings
 from backupov2.jobstore import JobStore
+from backupov2.runner import RunnerState
 from backupov2.ui import theme
 from backupov2.ui.app import BackupApp
 from backupov2.ui.menubar import JOB_ITEMS
+from backupov2.ui.widgets import format_stamp
+
+
+def descendants(widget: tk.Misc):
+    """Every widget under ``widget``, itself excluded."""
+    for child in widget.winfo_children():
+        yield child
+        yield from descendants(child)
 
 
 class ShellCase(unittest.TestCase):
@@ -124,6 +135,36 @@ class StageTests(ShellCase):
         for button in (self.app.add_button, self.app.up_button, self.app.down_button):
             self.assertEqual(str(button["state"]), "disabled")
 
+    def test_the_toolbar_is_hidden_with_nothing_open(self) -> None:
+        """It acts on a queue of folders, and there is none - so it was a row
+        of greyed-out buttons plus a second copy of the setup card's
+        "Importar de fotos...". Same rule as the setup fields: gone, not grey."""
+        self.app.update_idletasks()
+        self.assertFalse(self.app.toolbar.winfo_manager())
+
+    def test_opening_a_job_brings_the_toolbar_back(self) -> None:
+        self.open_job()
+        self.app.update_idletasks()
+        self.assertTrue(self.app.toolbar.winfo_manager())
+
+    def test_closing_hides_the_toolbar_again(self) -> None:
+        self.open_job()
+        self.app._close_job()
+        self.app.update_idletasks()
+        self.assertFalse(self.app.toolbar.winfo_manager())
+
+    def test_there_is_exactly_one_help_button(self) -> None:
+        """Two were built for a while - the glyph one and the icon one meant
+        to replace it - and side by side in the brand bar they read as two
+        different features."""
+        found = [
+            widget
+            for widget in descendants(self.app)
+            if isinstance(widget, ttk.Button)
+            and "Ajuda" in str(widget.cget("text"))
+        ]
+        self.assertEqual(len(found), 1, [str(w) for w in found])
+
     def test_importing_photos_stays_available_with_nothing_open(self) -> None:
         """It is one of the ways to *create* a job - the sheet names the
         batch folder too."""
@@ -145,6 +186,51 @@ class DiscControlTests(ShellCase):
         self.app.disc_panel.show_target("EG 1841  >  Disco 01")
         self.app.update_idletasks()
         self.assertTrue(self.app.disc_panel._target_card.winfo_manager())
+
+    def test_the_controls_are_hidden_with_no_job(self) -> None:
+        """IDLE only happens with nothing open, and then not one of the six
+        buttons has a runner behind it."""
+        self.app.update_idletasks()
+        self.assertFalse(self.app.disc_panel.buttons.winfo_manager())
+
+    def test_the_controls_come_back_with_a_job(self) -> None:
+        self.app.disc_panel.show_state(RunnerState.READY_NO_DISC)
+        self.app.update_idletasks()
+        self.assertTrue(self.app.disc_panel.buttons.winfo_manager())
+
+    def test_the_progress_bar_is_hidden_until_there_is_progress(self) -> None:
+        """An empty trough over two blank captions reads as "0% copied",
+        not as "nothing loaded"."""
+        self.app.disc_panel.show_state(RunnerState.READY_NO_DISC)
+        self.app.update_idletasks()
+        self.assertFalse(self.app.disc_panel.progress_block.winfo_manager())
+
+    def test_the_progress_bar_appears_while_copying(self) -> None:
+        self.app.disc_panel.show_state(RunnerState.WORKING)
+        self.app.update_idletasks()
+        self.assertTrue(self.app.disc_panel.progress_block.winfo_manager())
+
+    def test_a_finished_job_keeps_its_full_bar(self) -> None:
+        """JOB_COMPLETE is idle too, but the full green bar is the point."""
+        self.app.disc_panel.show_state(RunnerState.JOB_COMPLETE)
+        self.app.update_idletasks()
+        self.assertTrue(self.app.disc_panel.progress_block.winfo_manager())
+
+    def test_trouble_brings_the_way_out_with_it(self) -> None:
+        panel = self.app.disc_panel
+        panel.show_state(RunnerState.WORKING)
+        panel.show_trouble("3 arquivos ilegiveis ate agora.")
+        self.app.update_idletasks()
+        self.assertTrue(panel.danger_row.winfo_manager())
+        self.assertTrue(panel.trouble_label.winfo_manager())
+
+    def test_leaving_the_copy_takes_the_trouble_box_away(self) -> None:
+        panel = self.app.disc_panel
+        panel.show_state(RunnerState.WORKING)
+        panel.show_trouble("3 arquivos ilegiveis ate agora.")
+        panel.show_state(RunnerState.READY_NO_DISC)
+        self.app.update_idletasks()
+        self.assertFalse(panel.danger_row.winfo_manager())
 
 
 class ShortcutTests(ShellCase):
@@ -291,6 +377,133 @@ class AssetTests(unittest.TestCase):
         image = theme.load_logo(second, 32)
         self.assertIsNotNone(image)
         self.assertEqual(image.width(), 32)  # usable, not a dangling handle
+
+    def test_icons_folder_and_files_exist(self) -> None:
+        icons_dir = theme.ASSETS / "icons"
+        self.assertTrue(icons_dir.is_dir())
+        expected = [
+            "play", "pause", "skip", "stop", "eject", "warning",
+            "add", "photo", "folder", "open", "clean", "recent",
+            "close", "up", "down", "help",
+        ]
+        for name in expected:
+            with self.subTest(icon=name):
+                self.assertTrue((icons_dir / f"{name}.png").is_file())
+                self.assertTrue((icons_dir / f"{name}-16.png").is_file())
+
+    def test_load_icon(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"no display available for Tk: {exc}")
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        icon = theme.load_icon(root, "play", 16)
+        self.assertIsNotNone(icon)
+        self.assertEqual(icon.width(), 16)
+        self.assertEqual(icon.height(), 16)
+
+    def test_load_icon_caching_per_interpreter(self) -> None:
+        try:
+            first = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"no display available for Tk: {exc}")
+        first.withdraw()
+        theme.load_icon(first, "play", 16)
+        first.destroy()
+
+        second = tk.Tk()
+        second.withdraw()
+        self.addCleanup(second.destroy)
+        icon = theme.load_icon(second, "play", 16)
+        self.assertIsNotNone(icon)
+        self.assertEqual(icon.width(), 16)
+
+    def test_set_button_icon(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"no display available for Tk: {exc}")
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        btn = ttk.Button(root)
+        theme.set_button_icon(btn, "play", "Iniciar")
+        self.assertIn("Iniciar", str(btn.cget("text")))
+        self.assertEqual(str(btn.cget("compound")), "left")
+
+    def test_a_button_icon_greys_out_with_its_label(self) -> None:
+        """The bug this guards: a disabled button kept a fully saturated icon
+        beside dead grey text, so it read as half-enabled. ttk takes a
+        state-keyed image list, so both are handed over at build time."""
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"no display available for Tk: {exc}")
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        btn = ttk.Button(root)
+        theme.set_button_icon(btn, "play", "Iniciar")
+        spec = str(btn.cget("image"))
+        self.assertIn("disabled", spec, spec)
+
+    def test_every_tone_the_ui_asks_for_is_on_disk(self) -> None:
+        """A missing tone falls back to the Unicode glyph silently, which is
+        exactly the kind of drift that put four different icon styles in one
+        toolbar."""
+        icons = theme.ASSETS / "icons"
+        for name in ("play", "pause", "skip", "stop", "eject", "warning", "add",
+                     "photo", "folder", "open", "clean", "recent", "close",
+                     "up", "down", "help", "check", "send"):
+            for tone in ("", "muted", "invert", "danger", "amber"):
+                suffix = f"-{tone}" if tone else ""
+                with self.subTest(icon=name, tone=tone):
+                    self.assertTrue((icons / f"{name}-16{suffix}.png").is_file())
+
+    def test_the_accent_button_gets_a_legible_icon(self) -> None:
+        """Brand blue on the brand-blue accent button is an invisible icon,
+        so the tone follows the style the button already has."""
+        self.assertEqual(theme.TONE_FOR_STYLE["Accent.TButton"], "invert")
+        self.assertEqual(theme.TONE_FOR_STYLE["Danger.TButton"], "danger")
+
+    def test_the_checkbox_indicator_is_the_drawn_one(self) -> None:
+        """clam paints a *checked* box as a dark X on grey, and an X is the
+        one mark a user reads as "off" - on the toggle that decides whether a
+        disc starts copying by itself."""
+        try:
+            root = tk.Tk()
+        except tk.TclError as exc:
+            self.skipTest(f"no display available for Tk: {exc}")
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        style = theme.apply_theme(root)
+        self.assertIn("Brand.Checkbutton.indicator", str(style.layout("TCheckbutton")))
+
+
+class StampTests(unittest.TestCase):
+    """Stored timestamps are UTC; the log beside them is stamped local."""
+
+    def test_a_stored_stamp_is_shown_in_local_time(self) -> None:
+        stored = "2026-09-21T18:12:04Z"
+        expected = (
+            datetime(2026, 9, 21, 18, 12, 4, tzinfo=timezone.utc)
+            .astimezone()
+            .strftime("%d/%m %H:%M")
+        )
+        self.assertEqual(format_stamp(stored), expected)
+
+    def test_an_empty_stamp_stays_empty(self) -> None:
+        self.assertEqual(format_stamp(""), "")
+        self.assertEqual(format_stamp(None), "")
+
+    def test_an_unexpected_shape_is_passed_through(self) -> None:
+        """A hand-edited job file should still show whatever it says rather
+        than losing the column."""
+        self.assertEqual(format_stamp("ontem a tarde"), "ontem a tarde")
+
+    def test_the_pattern_is_caller_chosen(self) -> None:
+        stored = "2026-09-21T18:12:04Z"
+        local = datetime(2026, 9, 21, 18, 12, 4, tzinfo=timezone.utc).astimezone()
+        self.assertEqual(format_stamp(stored, "%H:%M"), local.strftime("%H:%M"))
 
 
 if __name__ == "__main__":

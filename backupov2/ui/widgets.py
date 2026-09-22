@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from datetime import datetime, timezone
 from tkinter import ttk
 
 from . import theme
@@ -23,6 +24,27 @@ def format_speed(bytes_per_second: float) -> str:
     return f"{format_bytes(bytes_per_second)}/s"
 
 
+def format_stamp(utc_text: str | None, pattern: str = "%d/%m %H:%M") -> str:
+    """A stored timestamp as the local wall clock, in pt-BR order.
+
+    Everything on disk is UTC with a trailing Z (``jobmodel.utc_now``), and
+    the log lines are stamped with ``strftime`` off the local clock - so
+    printing the stored string raw put two readings of the same moment in the
+    same window, three hours apart in this timezone. The conversion happens
+    here so there is one answer to "when did that finish?" everywhere.
+
+    Anything not in the stored shape is passed through rather than dropped: a
+    hand-edited job file should still show whatever it says.
+    """
+    if not utc_text:
+        return ""
+    try:
+        moment = datetime.strptime(str(utc_text), "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return str(utc_text).replace("T", " ").rstrip("Z")
+    return moment.replace(tzinfo=timezone.utc).astimezone().strftime(pattern)
+
+
 def format_duration(seconds: float | None) -> str:
     """Compact pt-BR duration: 45s, 3m20, 1h05."""
     if seconds is None or seconds < 0:
@@ -35,6 +57,29 @@ def format_duration(seconds: float | None) -> str:
         return f"{minutes}m{secs:02d}"
     hours, mins = divmod(minutes, 60)
     return f"{hours}h{mins:02d}"
+
+
+def autohide(bar: ttk.Scrollbar, **grid_kwargs):
+    """A scroll command that grids ``bar`` only while its axis overflows.
+
+    Tk hands the scroll command the visible fraction on every redraw, so
+    ``(0.0, 1.0)`` is exactly "all of it fits". A permanently gridded bar is
+    an empty trough saying "there is more here" under content that has none -
+    which is what the folder list looked like under five rows.
+
+    The grid arguments are kept here rather than read back off the widget
+    because ``grid_remove`` forgets nothing but ``grid()`` with no arguments
+    only restores a placement the widget has already had.
+    """
+
+    def sync(first, last) -> None:
+        bar.set(first, last)
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            bar.grid_remove()
+        elif not bar.winfo_manager():
+            bar.grid(**grid_kwargs)
+
+    return sync
 
 
 class Card(tk.Frame):
@@ -197,8 +242,9 @@ class LogView(ttk.Frame):
         self.text.grid(row=0, column=0, sticky="nsew")
 
         scroll = ttk.Scrollbar(self, orient="vertical", command=self.text.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
-        self.text.configure(yscrollcommand=scroll.set)
+        self.text.configure(
+            yscrollcommand=autohide(scroll, row=0, column=1, sticky="ns")
+        )
 
         for level, colour in self.COLOURS.items():
             self.text.tag_configure(level, foreground=colour)

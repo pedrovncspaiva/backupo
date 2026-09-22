@@ -248,6 +248,30 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         darkcolor=[("active", BRAND_TINT)],
     )
 
+    # The same quiet weight, for a button sitting on a tinted card rather than
+    # on white. Quiet.TButton keeps its SURFACE background even when disabled,
+    # which on the destination card reads as an empty white input box dropped
+    # into the middle of a blue panel - so it borrows the card's own colour
+    # instead and disappears when it has nothing to do.
+    style.configure(
+        "Tint.TButton",
+        background=BRAND_TINT,
+        foreground=BRAND_DEEP,
+        bordercolor=BRAND_TINT_2,
+        lightcolor=BRAND_TINT,
+        darkcolor=BRAND_TINT,
+        padding=(9, 5),
+        font=FONT_SMALL,
+    )
+    style.map(
+        "Tint.TButton",
+        background=[("disabled", BRAND_TINT), ("active", SURFACE)],
+        foreground=[("disabled", INK_MUTED), ("active", BRAND_DEEP)],
+        bordercolor=[("disabled", BRAND_TINT), ("active", BRAND)],
+        lightcolor=[("disabled", BRAND_TINT), ("active", SURFACE)],
+        darkcolor=[("disabled", BRAND_TINT), ("active", SURFACE)],
+    )
+
     style.configure(
         "Danger.TButton",
         background=SURFACE,
@@ -305,12 +329,19 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         darkcolor=[("focus", BRAND)],
     )
 
+    # clam's indicator elements take -indicatorbackground (the box) and
+    # -indicatorforeground (the mark). They do *not* take -indicatorcolor,
+    # which ttk accepts without complaint and then ignores - so setting it was
+    # leaving both controls in clam's default grey. The drawn indicator
+    # installed at the end of this function replaces the checkbox outright;
+    # these colours are what the radiobutton uses, and what the checkbox falls
+    # back to if the images are missing.
     style.configure(
         "TCheckbutton",
         background=SURFACE,
         foreground=INK,
-        indicatorcolor=SURFACE,
         indicatorbackground=SURFACE,
+        indicatorforeground=SURFACE,
         bordercolor=BORDER_STRONG,
         focusthickness=0,
         padding=(2, 4),
@@ -319,18 +350,22 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
         "TCheckbutton",
         background=[("active", SURFACE)],
         foreground=[("disabled", DISABLED_FG), ("active", BRAND_DEEP)],
-        indicatorcolor=[("selected", BRAND), ("pressed", BRAND_TINT_2)],
+        indicatorbackground=[("disabled", CANVAS), ("selected", BRAND), ("!selected", SURFACE)],
+        indicatorforeground=[("selected", SURFACE)],
         bordercolor=[("selected", BRAND), ("active", BRAND)],
     )
     style.configure("Canvas.TCheckbutton", background=CANVAS)
     style.map("Canvas.TCheckbutton", background=[("active", CANVAS)])
 
     style.configure("TRadiobutton", background=SURFACE, foreground=INK,
-                    indicatorcolor=SURFACE, focusthickness=0, padding=(2, 4))
+                    indicatorbackground=SURFACE, indicatorforeground=BRAND,
+                    bordercolor=BORDER_STRONG, focusthickness=0, padding=(2, 4))
     style.map(
         "TRadiobutton",
         background=[("active", SURFACE)],
-        indicatorcolor=[("selected", BRAND)],
+        foreground=[("disabled", DISABLED_FG), ("active", BRAND_DEEP)],
+        indicatorbackground=[("disabled", CANVAS), ("selected", SURFACE)],
+        indicatorforeground=[("disabled", DISABLED_FG), ("selected", BRAND)],
         bordercolor=[("selected", BRAND), ("active", BRAND)],
     )
 
@@ -439,6 +474,7 @@ def apply_theme(root: tk.Misc) -> ttk.Style:
             arrowcolor=[("pressed", BRAND_DEEP), ("active", BRAND_DEEP)],
         )
 
+    _install_checkbox_indicator(root, style)
     return style
 
 
@@ -498,3 +534,165 @@ def apply_window_icon(window: tk.Tk | tk.Toplevel) -> None:
                 window.iconphoto(True, image)
         except tk.TclError:
             pass
+
+
+# -- icons ----------------------------------------------------------------
+# Drawn by tools/make_icons.py, four tones deep. ``muted`` exists so a
+# disabled button greys its icon along with its label: ttk takes a state-keyed
+# image list, so both are handed over once at build time and Tk swaps them.
+
+ICON_SIZE = 16
+
+# The tone to ask for on each of the button styles that is not plain.
+TONE_FOR_STYLE = {
+    "Accent.TButton": "invert",
+    "Danger.TButton": "danger",
+}
+
+_icons: dict[tuple[int, str, int, str], tk.PhotoImage] = {}
+
+
+def load_icon(
+    master: tk.Misc, name: str, size: int = ICON_SIZE, tone: str = ""
+) -> tk.PhotoImage | None:
+    """One icon, or None if it is not on disk.
+
+    Cached per interpreter for the same reason ``load_logo`` is: an image
+    belongs to the Tk instance that made it, and a test suite building a fresh
+    root per case would otherwise be handed a dead one.
+    """
+    key = (id(master.tk), name, size, tone)
+    cached = _icons.get(key)
+    if cached is not None:
+        try:
+            cached.width()  # still alive in this interpreter?
+            return cached
+        except Exception:
+            _icons.pop(key, None)
+
+    suffix = f"-{tone}" if tone else ""
+    for candidate in (f"{name}-{size}{suffix}.png", f"{name}{suffix}.png", f"{name}.png"):
+        path = ASSETS / "icons" / candidate
+        if path.is_file():
+            try:
+                image = tk.PhotoImage(master=master, file=str(path))
+            except tk.TclError:  # pragma: no cover - Tk built without PNG
+                return None
+            _icons[key] = image
+            return image
+    return None
+
+
+def set_button_icon(
+    button: ttk.Button | ttk.Menubutton,
+    name: str,
+    text: str = "",
+    size: int = ICON_SIZE,
+    tone: str | None = None,
+) -> None:
+    """Put an icon on a button, in the tone its style calls for.
+
+    ``tone`` defaults to the one that is legible on whatever style the button
+    already has - white on the filled accent button, red on the destructive
+    one - because a brand-blue icon on a brand-blue button is an invisible
+    button.
+
+    Falls back to the Unicode glyph if the .png is missing, so a stripped
+    assets folder costs the icon and not the label.
+    """
+    if tone is None:
+        tone = TONE_FOR_STYLE.get(str(button.cget("style")), "")
+
+    icon = load_icon(button, name, size, tone)
+    if icon is None:
+        glyph = GLYPH.get(name, "")
+        button.configure(text=f"{glyph}  {text}".strip() if glyph else text)
+        return
+
+    muted = load_icon(button, name, size, "muted")
+    button.configure(
+        image=(icon, "disabled", muted) if muted is not None else icon,
+        compound="left" if text else "image",
+        text=f"  {text}" if text else "",
+    )
+
+
+# -- the checkbox ---------------------------------------------------------
+
+_checkbox_images: dict[int, dict[str, tk.PhotoImage]] = {}
+
+CHECKBOX_STATES = (
+    "checkbox-off",
+    "checkbox-off-hover",
+    "checkbox-off-muted",
+    "checkbox-on",
+    "checkbox-on-hover",
+    "checkbox-on-muted",
+)
+
+
+def _install_checkbox_indicator(root: tk.Misc, style: ttk.Style) -> bool:
+    """Replace clam's checkbox indicator with the drawn one.
+
+    clam paints a *checked* box as a dark X on grey - and an X is the one mark
+    every user reads as "off". The app's most consequential toggle is a
+    checkbox ("Copia automatica" decides whether a disc starts copying on its
+    own), so it cannot be showing the opposite of its own state.
+
+    Returns False if the images are not on disk, leaving the caller to fall
+    back to clam's indicator with at least its colours corrected.
+    """
+    images: dict[str, tk.PhotoImage] = {}
+    for name in CHECKBOX_STATES:
+        path = ASSETS / "icons" / f"{name}.png"
+        if not path.is_file():
+            return False
+        try:
+            images[name] = tk.PhotoImage(master=root, file=str(path))
+        except tk.TclError:  # pragma: no cover - Tk built without PNG
+            return False
+    # Tk drops an image the moment nothing references it, so these outlive the
+    # function that made them.
+    _checkbox_images[id(root.tk)] = images
+
+    try:
+        style.element_create(
+            "Brand.Checkbutton.indicator",
+            "image",
+            images["checkbox-off"],
+            # First match wins, so the two-state specs come before the one
+            # that would otherwise swallow them.
+            ("disabled", "selected", images["checkbox-on-muted"]),
+            ("disabled", images["checkbox-off-muted"]),
+            ("selected", "active", images["checkbox-on-hover"]),
+            ("selected", images["checkbox-on"]),
+            ("active", images["checkbox-off-hover"]),
+            border=0,
+            sticky="",
+        )
+    except tk.TclError:  # pragma: no cover - already created on this root
+        return False
+
+    style.layout(
+        "TCheckbutton",
+        [
+            (
+                "Checkbutton.padding",
+                {
+                    "sticky": "nswe",
+                    "children": [
+                        ("Brand.Checkbutton.indicator", {"side": "left", "sticky": ""}),
+                        (
+                            "Checkbutton.focus",
+                            {
+                                "side": "left",
+                                "sticky": "w",
+                                "children": [("Checkbutton.label", {"sticky": "nswe"})],
+                            },
+                        ),
+                    ],
+                },
+            )
+        ],
+    )
+    return True

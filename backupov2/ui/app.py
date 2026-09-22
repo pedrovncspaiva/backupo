@@ -57,7 +57,7 @@ from .menubar import MenuBar
 from .photo_import import PhotoImportDialog
 from .disc_panel import DiscPanel
 from .entries_view import EntriesView
-from .widgets import Card, Chip, LogView, format_bytes, tip
+from .widgets import Card, Chip, LogView, format_bytes, format_stamp, tip
 
 POLL_MS = 1000
 TICK_MS = 100
@@ -184,11 +184,9 @@ class BackupApp(tk.Tk):
         tk.Label(right, text="SONDOTECNICA", font=(theme.UI_FAMILY, 11, "bold"),
                  background=theme.SURFACE, foreground=theme.BRAND).pack(side="left",
                                                                        padx=(0, 14))
-        tip(
-            ttk.Button(right, text=f"{theme.GLYPH['help']}  Ajuda", style="Quiet.TButton",
-                       command=self._show_help),
-            "Guias curtos para cada situacao  (F1)",
-        ).pack(side="left")
+        help_btn = ttk.Button(right, style="Quiet.TButton", command=self._show_help)
+        theme.set_button_icon(help_btn, "help", "Ajuda")
+        tip(help_btn, "Guias curtos para cada situacao  (F1)").pack(side="left")
 
     # -- the stage: job card, or setup card --------------------------------
 
@@ -209,26 +207,26 @@ class BackupApp(tk.Tk):
         # End-of-batch actions, in the order a batch actually ends: look at
         # it, tidy it, put it away.
         self.clean_button = ttk.Button(
-            header_buttons, text=f"{theme.GLYPH['clean']}  Limpar controle",
-            style="Quiet.TButton", command=self._clean_control_files,
+            header_buttons, style="Quiet.TButton", command=self._clean_control_files,
         )
+        theme.set_button_icon(self.clean_button, "clean", "Limpar controle")
         self.clean_button.pack(side="left", padx=(0, 8))
         tip(self.clean_button,
             "Remove os arquivos de bookkeeping da pasta do lote, antes de entregar")
 
         self.open_folder_button = ttk.Button(
-            header_buttons, text=f"{theme.GLYPH['folder']}  Abrir pasta",
-            command=self._open_parent_folder,
+            header_buttons, command=self._open_parent_folder,
         )
+        theme.set_button_icon(self.open_folder_button, "folder", "Abrir pasta")
         self.open_folder_button.pack(side="left")
         tip(self.open_folder_button, "Abrir a pasta do lote no Explorer  (Ctrl+E)")
         # The only way to get "Criar trabalho" enabled again without closing
         # the whole app - finishing a batch leaves the setup fields disabled
         # with no button of their own to undo that.
         self.close_job_button = ttk.Button(
-            header_buttons, text=f"{theme.GLYPH['close']}  Fechar trabalho",
-            command=self._close_job,
+            header_buttons, command=self._close_job,
         )
+        theme.set_button_icon(self.close_job_button, "close", "Fechar trabalho")
         self.close_job_button.pack(side="left", padx=(8, 0))
         tip(self.close_job_button,
             "Liberar a tela para o proximo lote. Nada e apagado  (Ctrl+W)")
@@ -273,9 +271,15 @@ class BackupApp(tk.Tk):
         self.collect_bar.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         self.collect_bar.columnconfigure(1, weight=1)
         self.collect_var = tk.StringVar(value="")
-        tk.Label(self.collect_bar, text=theme.GLYPH["warning"],
-                 background=theme.AMBER_TINT, foreground=theme.AMBER_DEEP,
-                 font=(theme.UI_FAMILY, 13)).grid(row=0, column=0, padx=(0, 10))
+        collect_mark = tk.Label(self.collect_bar, background=theme.AMBER_TINT,
+                                foreground=theme.AMBER_DEEP,
+                                font=(theme.UI_FAMILY, 13))
+        self._collect_icon = theme.load_icon(self, "warning", size=20, tone="amber")
+        if self._collect_icon is not None:
+            collect_mark.configure(image=self._collect_icon)
+        else:
+            collect_mark.configure(text=theme.GLYPH["warning"])
+        collect_mark.grid(row=0, column=0, padx=(0, 10))
         tk.Label(
             self.collect_bar, textvariable=self.collect_var,
             background=theme.AMBER_TINT, foreground=theme.AMBER_DEEP,
@@ -340,21 +344,20 @@ class BackupApp(tk.Tk):
         self.new_button.pack(side="left")
         tip(self.new_button, "Cria a pasta do lote e pede a lista de pastas  (Ctrl+N)")
 
-        open_button = ttk.Button(actions, text=f"{theme.GLYPH['open']}  Abrir...",
-                                 command=self._open_job)
+        open_button = ttk.Button(actions, command=self._open_job)
+        theme.set_button_icon(open_button, "open", "Abrir...")
         open_button.pack(side="left", padx=(8, 0))
         tip(open_button, "Retomar um trabalho salvo  (Ctrl+O)")
 
-        self.recent_button = ttk.Menubutton(
-            actions, text=f"{theme.GLYPH['recent']}  Recentes")
+        self.recent_button = ttk.Menubutton(actions)
+        theme.set_button_icon(self.recent_button, "recent", "Recentes")
         self.recent_menu = tk.Menu(self.recent_button, tearoff=0)
         self.recent_button.configure(menu=self.recent_menu)
         self.recent_button.pack(side="left", padx=(8, 0))
         tip(self.recent_button, "Os ultimos trabalhos abertos neste computador")
 
-        photo_setup = ttk.Button(
-            actions, text=f"{theme.GLYPH['photo']}  Importar de fotos...",
-            command=self._import_from_photos)
+        photo_setup = ttk.Button(actions, command=self._import_from_photos)
+        theme.set_button_icon(photo_setup, "photo", "Importar de fotos...")
         photo_setup.pack(side="left", padx=(8, 0))
         tip(photo_setup, "Le a folha do protocolo e monta o lote inteiro  (Ctrl+I)")
 
@@ -368,25 +371,27 @@ class BackupApp(tk.Tk):
         self.toolbar = bar
 
         self.add_button = ttk.Button(
-            bar, text=f"{theme.GLYPH['add']}  Adicionar pastas...",
-            style="Toolbar.TButton", command=self._add_entries)
+            bar, style="Toolbar.TButton", command=self._add_entries)
+        theme.set_button_icon(self.add_button, "add", "Adicionar pastas...")
         self.add_button.pack(side="left")
         tip(self.add_button, "Colar mais nomes de pasta na fila  (Ctrl+Shift+A)")
 
         self.photo_button = ttk.Button(
-            bar, text=f"{theme.GLYPH['photo']}  Importar de fotos...",
-            style="Toolbar.TButton", command=self._import_from_photos)
+            bar, style="Toolbar.TButton", command=self._import_from_photos)
+        theme.set_button_icon(self.photo_button, "photo", "Importar de fotos...")
         self.photo_button.pack(side="left", padx=(8, 0))
         tip(self.photo_button, "Ler a folha do protocolo de entrega  (Ctrl+I)")
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=12, pady=2)
 
-        self.up_button = ttk.Button(bar, text=theme.GLYPH["up"], width=3,
+        self.up_button = ttk.Button(bar, width=3,
                                     style="Icon.TButton", command=lambda: self._move(-1))
+        theme.set_button_icon(self.up_button, "up", "")
         self.up_button.pack(side="left")
         tip(self.up_button, "Subir a pasta selecionada  (Alt+Cima)")
-        self.down_button = ttk.Button(bar, text=theme.GLYPH["down"], width=3,
+        self.down_button = ttk.Button(bar, width=3,
                                       style="Icon.TButton", command=lambda: self._move(1))
+        theme.set_button_icon(self.down_button, "down", "")
         self.down_button.pack(side="left", padx=(4, 0))
         tip(self.down_button, "Descer a pasta selecionada  (Alt+Baixo)")
 
@@ -511,6 +516,12 @@ class BackupApp(tk.Tk):
                        self.new_button):
             widget.configure(state="disabled" if enabled else "normal")
 
+        # The toolbar acts on a queue of folders, so with no job open every
+        # button on it but one is dead - and that one, "Importar de fotos...",
+        # is already sitting on the setup card two rows up. Showing it anyway
+        # made the first screen of the app a row of greyed-out controls and a
+        # duplicate. Same rule as the setup fields: what is on screen is what
+        # you can act on.
         if enabled:
             self.setup.grid_remove()
             self.header.grid()
@@ -518,7 +529,7 @@ class BackupApp(tk.Tk):
         else:
             self.header.grid_remove()
             self.setup.grid()
-            self.toolbar.grid()
+            self.toolbar.grid_remove()
 
         if hasattr(self, "menubar"):
             self.menubar.set_job_open(enabled)
@@ -1249,7 +1260,7 @@ class BackupApp(tk.Tk):
         self.drive_chip.set_tone(STATE_TONES.get(state, "neutral"))
 
     def _ask_duplicate(self, event) -> None:
-        when = (event.finished_utc or "").replace("T", " ").rstrip("Z")
+        when = format_stamp(event.finished_utc)
         again = messagebox.askyesno(
             "Disco ja copiado",
             f"Este disco ja foi copiado para '{event.entry_name}'"
@@ -1287,7 +1298,7 @@ class BackupApp(tk.Tk):
         self.status_var.set(
             f"{len(job)} pasta(s) no total   -   {pending_count} ainda por copiar"
         )
-        self.saved_var.set(f"salvo as {job.updated_utc[11:19]}")
+        self.saved_var.set(f"salvo as {format_stamp(job.updated_utc, '%H:%M:%S')}")
         self._paint_header()
 
         pending = job.next_pending()
